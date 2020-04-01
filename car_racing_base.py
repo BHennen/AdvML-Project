@@ -38,6 +38,8 @@ from pyglet import gl
 # same time.
 #
 # Created by Oleg Klimov. Licensed on the same terms as the rest of OpenAI Gym.
+#
+# Modified by Cameron Bost, Bryce Hennen
 
 STATE_W = 96   # less than Atari 160x192
 STATE_H = 96
