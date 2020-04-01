@@ -41,6 +41,8 @@ from pyglet import gl
 #
 # Modified by Cameron Bost, Bryce Hennen
 
+# TODO: wtf
+
 STATE_W = 96   # less than Atari 160x192
 STATE_H = 96
 VIDEO_W = 600
@@ -400,15 +402,19 @@ class CarRacing(gym.Env, EzPickle):
         t.disable()
         self.render_indicators(WINDOW_W, WINDOW_H)
 
-        if mode == 'human':
-            win.flip()
-            return self.viewer.isopen
-
         image_data = pyglet.image.get_buffer_manager().get_color_buffer().get_image_data()
+
+        if mode == "state_pixels":
         arr = np.fromstring(image_data.get_data(), dtype=np.uint8, sep='')
         arr = arr.reshape(VP_H, VP_W, 4)
         arr = arr[::-1, :, 0:3]
+            self.pixels = arr
+        if mode == 'human':
+            draw_pixels(self.pixels)
+            win.flip()
+            return self.viewer.isopen
 
+        
         return arr
 
     def close(self):
@@ -470,6 +476,11 @@ class CarRacing(gym.Env, EzPickle):
         self.score_label.text = "%04i" % self.reward
         self.score_label.draw()
 
+def draw_pixels(state_pixels):
+    pixels = np.flip(state_pixels, axis=0).flatten()
+    tex_data = (gl.GLubyte * pixels.size)( *pixels.astype('uint8'))
+    gl.glRasterPos2d(WINDOW_W - STATE_W, 0)
+    gl.glDrawPixels(STATE_W, STATE_H, gl.GL_RGB, gl.GL_UNSIGNED_BYTE, tex_data)
 
 if __name__=="__main__":
     from pyglet.window import key
