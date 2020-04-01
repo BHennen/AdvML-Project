@@ -405,9 +405,9 @@ class CarRacing(gym.Env, EzPickle):
         image_data = pyglet.image.get_buffer_manager().get_color_buffer().get_image_data()
 
         if mode == "state_pixels":
-        arr = np.fromstring(image_data.get_data(), dtype=np.uint8, sep='')
-        arr = arr.reshape(VP_H, VP_W, 4)
-        arr = arr[::-1, :, 0:3]
+            arr = np.fromstring(image_data.get_data(), dtype=np.uint8, sep='')
+            arr = arr.reshape(VP_H, VP_W, 4)
+            arr = arr[::-1, :, 0:3]
             self.pixels = arr
         if mode == 'human':
             draw_pixels(self.pixels)
