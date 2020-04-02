@@ -12,6 +12,8 @@ from gym.utils import colorize, seeding, EzPickle
 import pyglet
 from pyglet import gl
 
+from ctypes import *
+
 # Easiest continuous control task to learn from pixels, a top-down racing environment.
 # Discrete control is reasonable in this environment as well, on/off discretization is
 # fine.
@@ -41,7 +43,7 @@ from pyglet import gl
 #
 # Modified by Cameron Bost, Bryce Hennen
 
-# TODO: wtf
+# TODO: replace their viewer with my own and add pyglet.app.run() in main loop
 
 STATE_W = 96   # less than Atari 160x192
 STATE_H = 96
@@ -410,7 +412,6 @@ class CarRacing(gym.Env, EzPickle):
             arr = arr[::-1, :, 0:3]
             self.pixels = arr
         if mode == 'human':
-            draw_pixels(self.pixels)
             win.flip()
             return self.viewer.isopen
 
@@ -476,11 +477,32 @@ class CarRacing(gym.Env, EzPickle):
         self.score_label.text = "%04i" % self.reward
         self.score_label.draw()
 
-def draw_pixels(state_pixels):
+def draw_pixels(state_pixels, vlist):
+    # pixels = np.flip(state_pixels, axis=0).flatten()
+    # tex_data = (gl.GLubyte * pixels.size)( *pixels.astype('uint8'))
+    # gl.glEnable(gl.GL_TEXTURE_2D) 
+    # tex_id = gl.GLuint()
+    # gl.glGenTextures(1, byref(tex_id))
+    # gl.glBindTexture(gl.GL_TEXTURE_2D, tex_id)
+    # gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
+    # gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
+    # gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGB, (STATE_W), (STATE_H), 0, gl.GL_RGB, gl.GL_UNSIGNED_BYTE, tex_data)
+    # vlist.draw(GL_TRIANGLE_STRIP)
+    # gl.glDisable(gl.GL_TEXTURE_2D)
+    # Working
     pixels = np.flip(state_pixels, axis=0).flatten()
     tex_data = (gl.GLubyte * pixels.size)( *pixels.astype('uint8'))
-    gl.glRasterPos2d(WINDOW_W - STATE_W, 0)
+    gl.glRasterPos2d(0, 0)
     gl.glDrawPixels(STATE_W, STATE_H, gl.GL_RGB, gl.GL_UNSIGNED_BYTE, tex_data)
+
+def draw_to_window(win, state_pixels):
+    win.switch_to()
+    win.dispatch_events()
+    win.clear()
+    # gl.glViewport(0, 0, STATE_W, STATE_H)
+    # vlist = pyglet.graphics.vertex_list(4, ('v2f', [-x,-y, x,-y, -x,y, x,y]), ('t2f', [0,0, 1,0, 0,1, 1,1]))
+    draw_pixels(state_pixels, None)
+    win.flip()
 
 if __name__=="__main__":
     from pyglet.window import key
@@ -505,6 +527,10 @@ if __name__=="__main__":
     if record_video:
         from gym.wrappers.monitor import Monitor
         env = Monitor(env, '/tmp/video-test', force=True)
+
+    # Create second viewer
+    win2 = pyglet.window.Window(STATE_W, STATE_H)
+
     isopen = True
     while isopen:
         env.reset()
@@ -513,6 +539,7 @@ if __name__=="__main__":
         restart = False
         while True:
             s, r, done, info = env.step(a)
+            draw_to_window(win2, s)
             total_reward += r
             if steps % 200 == 0 or done:
                 print("\naction " + str(["{:+0.2f}".format(x) for x in a]))
