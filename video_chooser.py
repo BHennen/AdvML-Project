@@ -5,7 +5,7 @@ from ctypes import byref
 import math
 
 PIXEL_WIDTH = 96
-PIXEL_HEIGHT = 96
+PIXEL_HEIGHT = 70
 VIEWER_WIDTH = 300
 VIEWER_HEIGHT = 300
 FPS = 50
@@ -13,6 +13,7 @@ FPS = 50
 VIEWERS = []
 
 #TODO make code cleaner
+#TODO see about combining multiple arrays into one array so we have a big texture, then loop through those on each update
 
 def _nearest_pow2(v):
     # From http://graphics.stanford.edu/~seander/bithacks.html#RoundUpPowerOf2
@@ -29,8 +30,16 @@ def update(dt):
     for viewer in VIEWERS:
         viewer.update(dt)
 
+class TextureManager():
+    '''
+    TODO
+    '''
+    def __init__(self):
+        pass
+
+
 class PixelData():
-    def __init__(self, width=PIXEL_WIDTH, height=PIXEL_HEIGHT, xpos=0, ypos=0, scale=1):
+    def __init__(self, width=PIXEL_WIDTH, height=PIXEL_HEIGHT, xpos=0, ypos=0, scale=2):
         # x = width/2
         # y = height/2
         self.xpos = xpos
@@ -39,24 +48,25 @@ class PixelData():
         self.height = height
         self.scale = scale
         self.vlist = pyglet.graphics.vertex_list_indexed(4, [0, 0, 1, 2, 3, 3], ('v2f', [0,0, width,0, 0,height, width,height]),
-                                                                                ('t2f', [0,0, 1,0, 0,1, 1,1]))
+                                                                                ('t2f', [0,0, 1,0,     0,1,      1,1]))
         self.alpha = np.full(shape = (width, height, 1), fill_value = 255, dtype = "uint8")
         self.pixels = np.zeros(shape=(width, height, 3), dtype = "uint8")
 
-        self.pixels[:3, :, 0] = 255
-        self.pixels[-3:, :, 0] = 255
-        self.pixels[:, :3, 0] = 255
-        self.pixels[:, -3:, 0] = 255
-        self.pixels = np.concatenate((self.pixels, self.alpha), axis = 2)
+        self.pixels[:1, :, 0] = 255
+        self.pixels[-1:, :,1] = 255
+        self.pixels[:, :1, 2] = 255
+        self.pixels[:, -1:, 1] = 255
+
         self.max_size = 2*scale
         self.min_size = scale
-        self.cur_time = 0
+        self.cur_time = np.random.randint(5)
+        self.update(0)
 
     def update(self, dt):
         self.xpos += dt*1
         self.cur_time += dt
         self.scale = self.min_size + 1 + math.sin(self.cur_time) * (self.max_size - self.min_size)/2
-        self.pixels = np.concatenate((np.random.randint(low = 0, high = 255, size = (self.width, self.height, 3), dtype = "uint8"), self.alpha), axis = 2)
+        # self.pixels = np.concatenate((np.random.randint(low = 0, high = 255, size = (self.width, self.height, 3), dtype = "uint8"), self.alpha), axis = 2)
 
     def create_empty_texture(self, width, height):
         # Create an empty texture to the nearest power of 2 and returns the texture height and width
@@ -86,25 +96,21 @@ class PixelData():
         glScalef(self.scale, self.scale, self.scale)
         target = GL_TEXTURE_2D
         glEnable(target)
-        if self.width & 0x1:
-            alignment = 1
-        elif self.width & 0x2:
-            alignment = 2
-        else:
-            alignment = 4
         glPushClientAttrib(GL_CLIENT_PIXEL_STORE_BIT)
-        glPixelStorei(GL_UNPACK_ALIGNMENT, alignment)
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 4)
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, self.width)
+        glPixelStorei(GL_UNPACK_SKIP_PIXELS, 0)
+        glPixelStorei(GL_UNPACK_SKIP_ROWS, 0)
         self.create_empty_texture(self.width, self.height)
         glTexSubImage2D(target,
                         0,
-                        1,
-                        1,
+                        0,
+                        0,
                         self.width,
                         self.height,
                         GL_RGBA,
                         GL_UNSIGNED_BYTE,
                         tex_data)
-        # glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, self.width, self.height, 0, GL_RGB, GL_UNSIGNED_BYTE, tex_data)
         self.vlist.draw(GL_TRIANGLE_STRIP)
         glPopClientAttrib()
         glDisable(GL_TEXTURE_2D)
@@ -141,13 +147,14 @@ class Viewer():
 
 if __name__ == "__main__":
 
-    pixels = PixelData()
 
+    pixel1 = PixelData()
     win1 = Viewer()
-    win1.add_obj(pixels)
+    win1.add_obj(pixel1)
 
+    pixel2 = PixelData()
     win2 = Viewer()
-    win2.add_obj(pixels)
+    win2.add_obj(pixel2)
 
     VIEWERS.extend([win1, win2])
 
