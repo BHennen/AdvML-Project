@@ -1,7 +1,7 @@
 import pyglet
 from pyglet.gl import *
 import numpy as np
-from ctypes import byref
+from ctypes import *
 import math
 
 PIXEL_WIDTH = 96
@@ -32,9 +32,19 @@ def update(dt):
 
 class TextureManager():
     '''
-    TODO
+    Manages rectangular textures and stores them in a list to be accessed sequentially.
+
+    Assumes textures share the same dimensions.
     '''
-    def __init__(self):
+    def __init__(self, tex_height, tex_width):
+        self.tex_height = tex_height
+        self.tex_width = tex_width
+        self.texture_ids = []
+        self.tex_per_row = GL_MAX_TEXTURE_SIZE // tex_width
+        self.tex_per_col = GL_MAX_TEXTURE_SIZE // tex_height
+        self.tex_per_id = self.tex_per_row * self.tex_per_col
+
+    def add_texture(self):
         pass
 
 
@@ -49,8 +59,9 @@ class PixelData():
         self.scale = scale
         self.vlist = pyglet.graphics.vertex_list_indexed(4, [0, 0, 1, 2, 3, 3], ('v2f', [0,0, width,0, 0,height, width,height]),
                                                                                 ('t2f', [0,0, 1,0,     0,1,      1,1]))
-        self.alpha = np.full(shape = (width, height, 1), fill_value = 255, dtype = "uint8")
-        self.pixels = np.zeros(shape=(width, height, 3), dtype = "uint8")
+        alpha = np.full(shape = (height, width, 1), fill_value = 255, dtype = "uint8")
+        pixels = np.zeros(shape=(height, width, 3), dtype = "uint8")
+        self.pixels = np.concatenate((pixels, alpha), axis = 2)
 
         self.pixels[:1, :, 0] = 255
         self.pixels[-1:, :,1] = 255
@@ -76,6 +87,8 @@ class PixelData():
         glBindTexture(target, tex_id.value)
         glTexParameteri(target, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
         glTexParameteri(target, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+        glTexParameteri(target, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
+        glTexParameteri(target, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
         texture_width = _nearest_pow2(width)
         texture_height = _nearest_pow2(height)
         blank = (GLubyte * (texture_width * texture_height * 4))()
