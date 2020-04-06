@@ -346,11 +346,15 @@ class CarRacing(gym.Env, EzPickle):
 
         return self.state, step_reward, done, {}
 
+    def on_draw(self):
+        self.render()
+
     def render(self, mode='human'):
         assert mode in ['human', 'state_pixels', 'rgb_array']
         if self.viewer is None:
             from gym.envs.classic_control import rendering
             self.viewer = rendering.Viewer(WINDOW_W, WINDOW_H)
+            self.viewer.window.push_handlers(on_draw=self.on_draw)
             self.score_label = pyglet.text.Label('0000', font_size=36,
                 x=20, y=WINDOW_H*2.5/40.00, anchor_x='left', anchor_y='center',
                 color=(255,255,255,255))
@@ -358,7 +362,7 @@ class CarRacing(gym.Env, EzPickle):
 
         if "t" not in self.__dict__: return  # reset() not called yet
 
-        zoom = 0.1*SCALE*max(1-self.t, 0) + ZOOM*SCALE*min(self.t, 1)   # Animate zoom first second
+        zoom = ZOOM*SCALE #0.1*SCALE*max(1-self.t, 0) + ZOOM*SCALE*min(self.t, 1)   # Animate zoom first second
         zoom_state  = ZOOM*SCALE*STATE_W/WINDOW_W
         zoom_video  = ZOOM*SCALE*VIDEO_W/WINDOW_W
         scroll_x = self.car.hull.position[0]
@@ -373,12 +377,11 @@ class CarRacing(gym.Env, EzPickle):
             WINDOW_H/4 - (scroll_x*zoom*math.sin(angle) + scroll_y*zoom*math.cos(angle)) )
         self.transform.set_rotation(angle)
 
+        win = self.viewer.window
+        win.switch_to()
         self.car.draw(self.viewer, mode!="state_pixels")
 
         arr = None
-        win = self.viewer.window
-        win.switch_to()
-        win.dispatch_events()
 
         win.clear()
         t = self.transform
@@ -402,21 +405,19 @@ class CarRacing(gym.Env, EzPickle):
             geom.render()
         self.viewer.onetime_geoms = []
         t.disable()
-        self.render_indicators(WINDOW_W, WINDOW_H)
 
-        image_data = pyglet.image.get_buffer_manager().get_color_buffer().get_image_data()
-
-        if mode == "state_pixels":
+        if mode == 'human':
+            self.render_indicators(WINDOW_W, WINDOW_H)
+            return self.viewer.isopen
+        else:
+            image_data = pyglet.image.get_buffer_manager().get_color_buffer().get_image_data()
             arr = np.fromstring(image_data.get_data(), dtype=np.uint8, sep='')
             arr = arr.reshape(VP_H, VP_W, 4)
             arr = arr[::-1, :, 0:3]
             self.pixels = arr
-        if mode == 'human':
-            win.flip()
-            return self.viewer.isopen
 
-        
         return arr
+        
 
     def close(self):
         if self.viewer is not None:
@@ -477,32 +478,33 @@ class CarRacing(gym.Env, EzPickle):
         self.score_label.text = "%04i" % self.reward
         self.score_label.draw()
 
-def draw_pixels(state_pixels, vlist):
-    # pixels = np.flip(state_pixels, axis=0).flatten()
-    # tex_data = (gl.GLubyte * pixels.size)( *pixels.astype('uint8'))
-    # gl.glEnable(gl.GL_TEXTURE_2D) 
-    # tex_id = gl.GLuint()
-    # gl.glGenTextures(1, byref(tex_id))
-    # gl.glBindTexture(gl.GL_TEXTURE_2D, tex_id)
-    # gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
-    # gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
-    # gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGB, (STATE_W), (STATE_H), 0, gl.GL_RGB, gl.GL_UNSIGNED_BYTE, tex_data)
-    # vlist.draw(GL_TRIANGLE_STRIP)
-    # gl.glDisable(gl.GL_TEXTURE_2D)
-    # Working
-    pixels = np.flip(state_pixels, axis=0).flatten()
-    tex_data = (gl.GLubyte * pixels.size)( *pixels.astype('uint8'))
-    gl.glRasterPos2d(0, 0)
-    gl.glDrawPixels(STATE_W, STATE_H, gl.GL_RGB, gl.GL_UNSIGNED_BYTE, tex_data)
+class StateViewer():
+    def __init__(self, width, height, parent_viewer):
+        self.parent_viewer = parent_viewer
+        self.pixels = None
+        self.width = width
+        self.height = height
+        self.window = pyglet.window.Window(width, height)
+        self.window.push_handlers(on_draw = self.on_draw, on_close = self.on_close)
 
-def draw_to_window(win, state_pixels):
-    win.switch_to()
-    win.dispatch_events()
-    win.clear()
-    # gl.glViewport(0, 0, STATE_W, STATE_H)
-    # vlist = pyglet.graphics.vertex_list(4, ('v2f', [-x,-y, x,-y, -x,y, x,y]), ('t2f', [0,0, 1,0, 0,1, 1,1]))
-    draw_pixels(state_pixels, None)
-    win.flip()
+    def set_pixels(self, pixels):
+        self.pixels = pixels
+    
+    def on_draw(self):
+        if self.pixels is not None:
+            self.window.switch_to()
+            self.window.clear()
+            pixels = np.flip(self.pixels, axis=0).flatten()
+            tex_data = (gl.GLubyte * pixels.size)( *pixels.astype('uint8'))
+            gl.glRasterPos2d(0, 0)
+            gl.glDrawPixels(self.width, self.height, gl.GL_RGB, gl.GL_UNSIGNED_BYTE, tex_data)
+
+    def on_close(self):
+        self.parent_viewer.isopen = False
+
+    def close(self):
+        self.window.close()
+
 
 if __name__=="__main__":
     from pyglet.window import key
@@ -528,18 +530,31 @@ if __name__=="__main__":
         from gym.wrappers.monitor import Monitor
         env = Monitor(env, '/tmp/video-test', force=True)
 
-    # Create second viewer
-    win2 = pyglet.window.Window(STATE_W, STATE_H)
-
     isopen = True
-    while isopen:
-        env.reset()
-        total_reward = 0.0
-        steps = 0
-        restart = False
-        while True:
+
+    # Create second viewer
+    win2 = StateViewer(STATE_W, STATE_H, env.viewer)
+
+    restart = True
+    done = False
+    steps = 0
+    total_reward = 0.0
+
+    def update(dt):
+        global isopen, restart, done, steps, total_reward
+        if restart:
+            env.reset()
+            total_reward = 0.0
+            steps = 0
+            restart = False
+            done = False
+        if env.viewer.isopen == False:
+            env.viewer.close()
+            win2.close()
+            return
+        if not done and env.viewer.isopen:
             s, r, done, info = env.step(a)
-            draw_to_window(win2, s)
+            win2.set_pixels(s)
             total_reward += r
             if steps % 200 == 0 or done:
                 print("\naction " + str(["{:+0.2f}".format(x) for x in a]))
@@ -547,8 +562,10 @@ if __name__=="__main__":
                 #import matplotlib.pyplot as plt
                 #plt.imshow(s)
                 #plt.savefig("test.jpeg")
-            steps += 1
-            isopen = env.render()
-            if done or restart or isopen == False:
-                break
+            steps += 1            
+            if done or restart:
+                restart = True
+
+    pyglet.clock.schedule_interval(update, 1.0/FPS)
+    pyglet.app.run()
     env.close()
