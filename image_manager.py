@@ -9,13 +9,16 @@ class ImageManager():
 
     Assumes textures share the same dimensions.
 
+    Assumes data has the shape (img_height, img_width, 4), where 4 is RGBA pixel values.
+
+    Also assumes the data should be output from left to right, top to bottom
+
     img_height: The height of images
     img_width: The width of images
-    max_texture_size: The internal maximum size of the texture. Defaults to GL_MAX_TEXTURE_SIZE.
+    max_texture_size: The internal maximum size of the texture. If unspecified or larger than maximum, set to GL_MAX_TEXTURE_SIZE.
     '''
-    # TODO: manage overwriting of images (faster to modify existing texture than to make new ones)
     def __init__(self, img_height, img_width, max_texture_size=None):
-        self.max_texture_size = max_texture_size or GL_MAX_TEXTURE_SIZE
+        self.max_texture_size = min(max_texture_size or GL_MAX_TEXTURE_SIZE, GL_MAX_TEXTURE_SIZE)
         self.img_height = img_height
         self.img_width = img_width
         self.texture_ids = []
@@ -24,35 +27,36 @@ class ImageManager():
         self.imgs_per_col = self.max_texture_size // img_height
         self.imgs_per_tex = self.imgs_per_row * self.imgs_per_col
 
-    def append_image(self, pixel_data):
+    def update_image(self, pixel_data, image_index):        
         '''
-        Adds a new image to the image manager.
-
-        Assumes data has the shape (img_height, img_width, 4), where 4 is RGBA pixel values.
-
-        Also assumes the data should be output from left to right, top to bottom
+        Replaces an image in the image manager, or adds one to the end if image_index == num_imgs.
         '''
-
-        tex_id = None
-        glEnable(GL_TEXTURE_2D)
-
-        # Create new texture (if needed)
-        if self.num_imgs / self.imgs_per_tex >= len(self.texture_ids):
-            tex_id = self._create_empty_texture()
-
-        # Assign last used tex_id and bind it.
-        if not tex_id:
-            tex_id = self.texture_ids[-1]
-            glBindTexture(GL_TEXTURE_2D, tex_id.value)
+        if image_index > self.num_imgs:
+            raise IndexError(f"update_image: image_index out of bounds.")
 
         # Format data
         pixels = np.flip(pixel_data, axis=0).flatten() # Flip so the image is right side up
         tex_data = (GLubyte * pixels.size)( *pixels.astype('uint8'))
-        
 
-        # Get x and y offset and save data to correct spot in texture
-        x_offset, y_offset, _ = self._get_offset(self.num_imgs)
-        # Add image to the next open spot
+        # Get x and y offset and correct texture index
+        x_offset, y_offset, tex_index = self._get_offset(image_index)
+
+        glEnable(GL_TEXTURE_2D)
+
+        # Gets the texture id given the texture index and binds it.        
+        tex_id = None
+        if tex_index > len(self.texture_ids):
+            # check for valid texture
+            raise IndexError(f"_get_tex_id: tex_index out of bounds.")
+        elif tex_index == len(self.texture_ids):
+            # Create new texture (if needed) - automatically binds it
+            tex_id = self._create_empty_texture()
+        else:
+            # Assign given tex_index and bind it.
+            tex_id = self.texture_ids[tex_index]
+            glBindTexture(GL_TEXTURE_2D, tex_id.value)
+
+        # Add image to the specified image index
         glPushClientAttrib(GL_CLIENT_PIXEL_STORE_BIT)
         glPixelStorei(GL_UNPACK_ALIGNMENT, 4)
         glPixelStorei(GL_UNPACK_ROW_LENGTH, self.img_width)
@@ -69,17 +73,21 @@ class ImageManager():
                         tex_data)           # pixels);        
         glPopClientAttrib()
         glDisable(GL_TEXTURE_2D)
-        self.num_imgs += 1
+        if image_index == self.num_imgs:
+            self.num_imgs += 1
 
-    def draw_image(self, index, x, y, width=None, height=None):
+    def append_image(self, pixel_data):
+        self.update_image(pixel_data, self.num_imgs)
+        
+    def draw_image(self, image_index, x, y, width=None, height=None):
         '''
         Draws an image at the given x and y coordinate. Default width and height is the image size specified in the constructor.
         '''
-        if index >= self.num_imgs:
-            raise IndexError(f"draw_image: Index out of bounds.")
+        if image_index >= self.num_imgs:
+            raise IndexError(f"draw_image: image_index out of bounds.")
 
         # Draws the image specified by index to the screen
-        x_t_offset, y_t_offset, texture_ind = self._get_offset(index)
+        x_t_offset, y_t_offset, texture_ind = self._get_offset(image_index)
         tex_id = self.texture_ids[texture_ind]
         # Texture coordinate positions
         x_t1 = (x_t_offset) / self.max_texture_size
@@ -118,6 +126,7 @@ class ImageManager():
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 6)
         glPopClientAttrib()
         glPopAttrib()
+        glBindTexture(GL_TEXTURE_2D, 0)
         glDisable(GL_TEXTURE_2D)
 
     def _get_texel_coord(self, pixel_ind):
@@ -127,7 +136,7 @@ class ImageManager():
     def _get_offset(self, index):
         # Return the (x, y, z) pixel offset of the given image index,
         # where x is the x_offset, y is the y_offset, and z is the 
-        # texture the image is located in.
+        # texture index the image is located in.
         x = (index % self.imgs_per_row)
         y = (index // self.imgs_per_row) % self.imgs_per_col
         z = index // self.imgs_per_tex
