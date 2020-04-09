@@ -1,4 +1,5 @@
 import pyglet
+from pyglet.gl import *
 import numpy as np
 from colorsys import hsv_to_rgb
 
@@ -7,8 +8,18 @@ from image_manager import ImageManager
 # Create viewer class GUI that implements:
 # TODO: buttons (to prefer left sequence, right sequence, neither, or tie)
 
+def draw_rect(x, y, width, height):
+    glBegin(GL_LINE_LOOP)
+    glVertex2f(x, y)
+    glVertex2f(x + width, y)
+    glVertex2f(x + width, y + height)
+    glVertex2f(x, y + height)
+    glEnd()
+
+
 class Widget(object):
     def __init__(self, parent, x, y, width, height):
+        self._window = None
         self.parent = parent
         self.x = x
         self.y = y
@@ -59,10 +70,67 @@ class Widget(object):
     def get_size(self):
         return self.width, self.height
 
+    def get_window(self):
+        return self._window
+
+    def _set_window(self, window):
+        pass
+
+    def set_window(self, window):
+        self._window = window
+        self._set_window(window)
+        for child in self.children:
+            child.set_window(window)
+
+    window = property(get_window, set_window)
+
     def add_child(self, child):
         child.parent = self
+        if self.window is not None:
+            child.window = self.window
         self.children.append(child)
         child.resize()
+
+    @staticmethod
+    def scale(percentage, value):
+        if percentage is None:
+            return None
+        elif abs(percentage) > 1:
+            return percentage
+        else:
+            return percentage * value
+
+
+class CenteredWidget(Widget):
+    '''
+    Widget that is centered relative to its parent
+    '''
+    def __init__(self, parent, width, height, x_offset=None, y_offset=None):
+        self.set_pos(width, height, x_offset, y_offset)
+        super().__init__(parent, 0, 0, width, height)
+
+    def set_pos(self, width, height, x_offset=None, y_offset=None):
+        self._set_width = width
+        self._set_height = height
+        self.x_offset = x_offset
+        self.y_offset = y_offset
+    
+    def _resize(self):
+        self.width = Widget.scale(self._set_width, self.parent.width)
+        self.height = Widget.scale(self._set_height, self.parent.height)
+        x_offset = Widget.scale(self.x_offset, (self.parent.width - self.width) / 2)
+        y_offset = Widget.scale(self.y_offset, (self.parent.height - self.height) / 2)
+
+        parent_center_x = self.parent.x + self.parent.width / 2
+        parent_center_y = self.parent.y + self.parent.height / 2
+        self.x = parent_center_x - self.width/2 + (x_offset or 0)
+        self.y = parent_center_y - self.height/2 + (y_offset or 0)
+
+    def _render(self):
+        pass
+
+    def _update(self, dt):
+        pass
 
 class RelativeWidget(Widget):
     '''
@@ -84,21 +152,13 @@ class RelativeWidget(Widget):
         self._set_width = width
         self._set_height = height
 
-    def _resize(self):
-        def scale(percentage, value):
-            if percentage is None:
-                return None
-            elif abs(percentage) > 1:
-                return percentage
-            else:
-                return percentage * value
-        
-        left = scale(self._left, self.parent.width)
-        right = scale(self._right, self.parent.width)
-        top = scale(self._top, self.parent.height)
-        bottom = scale(self._bottom, self.parent.height)
-        width = scale(self._set_width, self.parent.width)
-        height = scale(self._set_height, self.parent.height)
+    def _resize(self):        
+        left = self.scale(self._left, self.parent.width)
+        right = self.scale(self._right, self.parent.width)
+        top = self.scale(self._top, self.parent.height)
+        bottom = self.scale(self._bottom, self.parent.height)
+        width = self.scale(self._set_width, self.parent.width)
+        height = self.scale(self._set_height, self.parent.height)
 
         if left is not None and right is not None:
             # left and right set, so constrain width to be from x to right side of parent
@@ -136,11 +196,12 @@ class RelativeWidget(Widget):
     def _update(self, dt):
         pass
 
+
 class WindowWidget(Widget):
     def __init__(self, window_width, window_height):
         super().__init__(None, 0, 0, window_width, window_height)
-        window = pyglet.window.Window(window_width, window_height, resizable=True)
-        window.push_handlers(on_resize = self._on_resize, on_draw = self.render)
+        self.window = pyglet.window.Window(window_width, window_height, resizable=True)
+        self.window.push_handlers(on_resize = self._on_resize, on_draw = self.render)
 
     def _resize(self):
         pass
@@ -155,6 +216,58 @@ class WindowWidget(Widget):
         self.width = width
         self.height = height
         self.resize()
+
+
+class Button(CenteredWidget, pyglet.event.EventDispatcher):
+    #Based on pyglet example media player: https://github.com/pyglet/pyglet/blob/master/examples/media_player.py
+    def __init__(self, parent, text, width=None, height=None, x_offset=None, y_offset=None, text_padding=0):
+        self._set_width = width
+        self._set_height = height
+        self.text_padding = text_padding
+        self._text = pyglet.text.Label(f'{text or ""}', anchor_x='center', anchor_y='center')
+        self.width = (width or self._text.content_width) + text_padding * 2
+        self.height = (height or self._text.content_height) + text_padding * 2
+        super().__init__(parent, width=self.width, height=self.height, x_offset=x_offset, y_offset=y_offset)
+        self.pressed = False
+
+    def _render(self):
+        if self.pressed:
+            glColor3f(1, 0, 0)
+        draw_rect(self.x, self.y, self.width, self.height)
+        glColor3f(1, 1, 1)
+        self.draw_label()
+
+    def draw_label(self):
+        self._text.x = int(self.x + self.width / 2)
+        self._text.y = int(self.y + self.height / 2)
+        self._text.draw()
+
+    def set_text(self, text):
+        self._text.text = text
+        self.width = (self._set_width or self._text.content_width) + text_padding * 2
+        self.height = (self._set_height or self._text.content_height) + text_padding * 2
+
+    text = property(lambda self: self._text.text, set_text)
+
+    def _set_window(self, window):
+        window.push_handlers(self)
+
+    def hit_test(self, x, y):
+        return (self.x < x < self.x + self.width and
+                self.y < y < self.y + self.height)
+
+    def on_mouse_press(self, x, y, button, modifiers):
+        self.pressed = self.hit_test(x, y)
+
+    def on_mouse_drag(self, x, y, dx, dy, buttons, modifiers):
+        self.pressed = self.hit_test(x, y)
+
+    def on_mouse_release(self, x, y, button, modifiers):
+        if self.hit_test(x, y):
+            self.dispatch_event('on_press')
+        self.pressed = False
+
+Button.register_event_type('on_press')
 
 
 class PixelFrame(RelativeWidget):
@@ -204,16 +317,28 @@ def gen_rainbow_pixels(num_pixels, pixel_width, pixel_height):
     return pixel_list
 
 if __name__ == "__main__":
-    # Generate frames and pixels before window
     pixel_width = 30
     pixel_height = 30
     pixels = gen_rainbow_pixels(50, pixel_width, pixel_height)
-    pixel_frames = RelativeWidget(parent = None, left = 0, right = 0, bottom = 0, top=30)
-    left_frame = PixelFrame(parent = pixel_frames, pixel_width = pixel_width, pixel_height = pixel_height, pixel_seq = pixels, left=0, right=0.5, top=0, bottom=0)
-    right_frame = PixelFrame(parent = pixel_frames, pixel_width = pixel_width, pixel_height = pixel_height, pixel_seq = pixels, FPS = 25, left=0.5, right=0, top=0, bottom=0)
 
     window = WindowWidget(500, 500)
-    window.add_child(pixel_frames)
+
+    # Buttons
+    button_frame = RelativeWidget(parent = window, left = 0, right = 0, top=0, height = 50)
+    left_button_frame = RelativeWidget(parent = button_frame, left = 0, right = 0.5, top=0, bottom=0)
+    left_button = Button(parent=left_button_frame, text="left", text_padding = 3)
+    right_button_frame = RelativeWidget(parent = button_frame, left = 0.5, right = 0, top=0, bottom=0)
+    right_button = Button(parent=right_button_frame, text="right", text_padding = 3)
+
+    # button callback
+    left_button.push_handlers(on_press=lambda: print("left pressed"))
+    right_button.push_handlers(on_press=lambda: print("right pressed"))
+
+    # Pixels
+    pixel_frame = RelativeWidget(parent = window, left = 0, right = 0, bottom = 0, top=50)
+    left_frame = PixelFrame(parent = pixel_frame, pixel_width = pixel_width, pixel_height = pixel_height, pixel_seq = pixels, left=0, right=0.5, top=0, bottom=0)
+    right_frame = PixelFrame(parent = pixel_frame, pixel_width = pixel_width, pixel_height = pixel_height, pixel_seq = pixels, FPS = 25, left=0.5, right=0, top=0, bottom=0)
+    
 
     pyglet.clock.schedule_interval(window.update, 1.0/50)
     pyglet.app.run()
