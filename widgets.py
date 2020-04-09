@@ -242,8 +242,8 @@ class Button(CenteredWidget, pyglet.event.EventDispatcher):
 
     def set_text(self, text):
         self._text.text = text
-        self.width = (self._set_width or self._text.content_width) + text_padding * 2
-        self.height = (self._set_height or self._text.content_height) + text_padding * 2
+        self.width = (self._set_width or self._text.content_width) + self.text_padding * 2
+        self.height = (self._set_height or self._text.content_height) + self.text_padding * 2
 
     text = property(lambda self: self._text.text, set_text)
 
