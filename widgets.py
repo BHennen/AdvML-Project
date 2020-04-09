@@ -275,15 +275,15 @@ class PixelFrame(RelativeWidget):
         self.pixel_width = pixel_width
         self.mgr = ImageManager(img_height = pixel_height, img_width = pixel_width, max_texture_size=1024)
         self.set_pixels(pixel_seq)
-        self.num_imgs = len(pixel_seq)
         self.img_index = 0
         self.switch_time = 1/FPS 
         self.countdown = self.switch_time
 
     def set_pixels(self, pixel_seq):
-        print("Loading pixels...", end="", flush=True)
+        print("Loading pixels...", end="", flush=True)        
         for index, pixels in enumerate(pixel_seq):
             self.mgr.update_image(pixels, index)
+        self.num_imgs = len(pixel_seq)
         print("done")
 
     def _render(self):
@@ -314,12 +314,38 @@ def gen_rainbow_pixels(num_pixels, pixel_width, pixel_height):
         pixel_list.append(pixels)
     return pixel_list
 
+def gen_solid_pixels(num_pixels, pixel_width, pixel_height):
+    #Generates a list of pixels that alternate between red, green, and blue
+    zeros = np.zeros(shape=(pixel_height, pixel_width, 3), dtype = "uint8")
+    alpha = np.full(shape = (pixel_height, pixel_width, 1), fill_value = 255, dtype = "uint8")
+    pixel_list = []
+    for pixel_num in range(num_pixels):
+        pixels = np.concatenate((zeros, alpha), axis = 2)
+        rgb = int(pixel_num // (num_pixels/3))
+        pixels[:, :, rgb] = 255
+        pixels[:, :, rgb] = 255
+        pixels[:, :, rgb] = 255
+        pixels[:, :, rgb] = 255
+        pixel_list.append(pixels)
+    return pixel_list
+
 if __name__ == "__main__":
     pixel_width = 30
     pixel_height = 30
     pixels = gen_rainbow_pixels(50, pixel_width, pixel_height)
-
+    pixels2 = gen_solid_pixels(50, pixel_width, pixel_height)
     window = WindowWidget(500, 500)
+
+    swap = True
+    def button_cb(button):
+        global swap
+        print(button.text)
+        if button.text == "Left is better":
+            if swap:
+                left_frame.set_pixels(pixels2)
+            else:
+                left_frame.set_pixels(pixels)
+            swap = not swap
 
     # Buttons
     button_frame = RelativeWidget(parent = window, left = 0, right = 0, top=0, height = 50)
@@ -330,7 +356,7 @@ if __name__ == "__main__":
         right = 1 - left - increment
         button_holder = RelativeWidget(parent = button_frame, left = left, right = right, top=0, bottom=0)
         button = Button(parent=button_holder, text=t, text_padding = 3)
-        button.push_handlers(on_press = lambda button: print(button.text))
+        button.push_handlers(on_press = button_cb)
 
     # Pixels
     pixel_frame = RelativeWidget(parent = window, left = 0, right = 0, bottom = 0, top=50)
