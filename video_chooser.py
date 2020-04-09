@@ -17,10 +17,13 @@ from widgets import WindowWidget, CenteredWidget, RelativeWidget, Button
 #    the human so far.
 
 # This script is for process 2:
-# 1) Receive trajectories segment pairs σ1 and σ2 into a queue
+# 1) Receive trajectories segment pairs σ1 and σ2 from process 1 into a queue
 # 2) Human chooses preference of one trajectory segment over another
 # 3) Triple (σ1, σ2, μ) is generated. μ is a distribution over {1,2} indicating which segment the user preferred
 #    If the human selects one segment as preferable, then μ puts all of its mass on that choice. If the human 
 #    marks the segments as equally preferable, then μ is uniform. Finally, if the human marks the segments as 
 #    incomparable, then the comparison is not included in the database.
+# 4) Triple is sent to process 3 
+
+
 
