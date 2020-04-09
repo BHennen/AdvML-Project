@@ -5,8 +5,6 @@ from colorsys import hsv_to_rgb
 
 from image_manager import ImageManager
 
-# Create viewer class GUI that implements:
-# TODO: buttons (to prefer left sequence, right sequence, neither, or tie)
 
 def draw_rect(x, y, width, height):
     glBegin(GL_LINE_LOOP)
