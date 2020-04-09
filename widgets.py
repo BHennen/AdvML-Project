@@ -262,7 +262,7 @@ class Button(CenteredWidget, pyglet.event.EventDispatcher):
 
     def on_mouse_release(self, x, y, button, modifiers):
         if self.hit_test(x, y):
-            self.dispatch_event('on_press')
+            self.dispatch_event('on_press', self)
         self.pressed = False
 
 Button.register_event_type('on_press')
@@ -323,14 +323,14 @@ if __name__ == "__main__":
 
     # Buttons
     button_frame = RelativeWidget(parent = window, left = 0, right = 0, top=0, height = 50)
-    left_button_frame = RelativeWidget(parent = button_frame, left = 0, right = 0.5, top=0, bottom=0)
-    left_button = Button(parent=left_button_frame, text="left", text_padding = 3)
-    right_button_frame = RelativeWidget(parent = button_frame, left = 0.5, right = 0, top=0, bottom=0)
-    right_button = Button(parent=right_button_frame, text="right", text_padding = 3)
-
-    # button callback
-    left_button.push_handlers(on_press=lambda: print("left pressed"))
-    right_button.push_handlers(on_press=lambda: print("right pressed"))
+    text = ["Left is better", "Can't tell", "Tie", "Right is better"]
+    increment = 1 / len(text)
+    for index, t in enumerate(text):
+        left = index * increment
+        right = 1 - left - increment
+        button_holder = RelativeWidget(parent = button_frame, left = left, right = right, top=0, bottom=0)
+        button = Button(parent=button_holder, text=t, text_padding = 3)
+        button.push_handlers(on_press = lambda button: print(button.text))
 
     # Pixels
     pixel_frame = RelativeWidget(parent = window, left = 0, right = 0, bottom = 0, top=50)
