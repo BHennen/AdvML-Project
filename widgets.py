@@ -205,7 +205,8 @@ class WindowWidget(Widget):
         pass
 
     def _render(self):
-        pass
+        self.window.switch_to()
+        self.window.clear()
 
     def _update(self, dt):
         pass
@@ -327,16 +328,17 @@ class PixelFrame(RelativeWidget):
 
     def wait(self):
         self.num_imgs = 0
-
-    def set_pixels(self, pixel_seq):
+        self.img_index = 0
         self.mgr.draw_image(0, self.x, self.y, self.width, self.height)
         self.window.flip()
-        print("Loading pixels...", end="", flush=True)        
+
+    def set_pixels(self, pixel_seq):
+        print("Loading pixels...")
         for index, pixels in enumerate(pixel_seq):
             self.mgr.update_image(pixels, index + 1) # + 1 to skip over wait image
         self.num_imgs = len(pixel_seq)
         self.img_index = 1
-        print("done")
+        print("Done loading pixels.")
 
     def _render(self):
         self.mgr.draw_image(self.img_index, self.x, self.y, self.width, self.height)
