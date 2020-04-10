@@ -84,7 +84,7 @@ class ImageManager():
         Draws an image at the given x and y coordinate. Default width and height is the image size specified in the constructor.
         '''
         if image_index >= self.num_imgs:
-            raise IndexError(f"draw_image: image_index out of bounds.")
+            raise IndexError(f"draw_image: image_index:{image_index} out of bounds.")
 
         # Draws the image specified by index to the screen
         x_t_offset, y_t_offset, texture_ind = self._get_offset(image_index)

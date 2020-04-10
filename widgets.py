@@ -196,9 +196,9 @@ class RelativeWidget(Widget):
 
 
 class WindowWidget(Widget):
-    def __init__(self, window_width, window_height):
+    def __init__(self, window_width, window_height, visible=True):
         super().__init__(None, 0, 0, window_width, window_height)
-        self.window = pyglet.window.Window(window_width, window_height, resizable=True)
+        self.window = pyglet.window.Window(window_width, window_height, resizable=True, visible=visible)
         self.window.push_handlers(on_resize = self._on_resize, on_draw = self.render)
 
     def _resize(self):
@@ -269,33 +269,89 @@ Button.register_event_type('on_press')
 
 
 class PixelFrame(RelativeWidget):
-    def __init__(self, parent, pixel_width, pixel_height, pixel_seq, FPS=50, left=None, right=None, top=None, bottom=None, width=None, height=None):
+    def __init__(self, parent, pixel_width, pixel_height, pixel_seq=None, FPS=50, left=None, right=None, top=None, bottom=None, width=None, height=None):
         super().__init__(parent, left=left, right=right, top=top, bottom=bottom, width=width, height=height)
         self.pixel_height = pixel_height
         self.pixel_width = pixel_width
         self.mgr = ImageManager(img_height = pixel_height, img_width = pixel_width, max_texture_size=1024)
-        self.set_pixels(pixel_seq)
+        self.set_wait_img()
+        if pixel_seq is not None: self.set_pixels(pixel_seq)
         self.img_index = 0
         self.switch_time = 1/FPS 
         self.countdown = self.switch_time
 
+    def set_wait_img(self):
+        zeros = np.zeros(shape=(self.pixel_height, self.pixel_width, 3), dtype = "uint8")
+        alpha = np.full(shape = (self.pixel_height, self.pixel_width, 1), fill_value = 255, dtype = "uint8")
+        pixels = np.concatenate((zeros, alpha), axis = 2)
+
+        box_width = int(self.pixel_width/6)
+        linewidth = max(int(box_width*.15), 1)
+        spacing = max(int(box_width*.3), 1)
+        char_width = max(box_width - linewidth - spacing, 5)
+        char_height = int(char_width * 2)
+        w = max(int(char_width/2), 1)
+        h = max(int(char_height/2), 1)
+        color = [0, 153, 0, 255]
+        h_start = int(self.pixel_height/2 - char_height/2)
+
+        total_width = 4 * (char_width) + 3 * (spacing + linewidth)
+
+        W_cursor = int((self.pixel_width - total_width) / 2)
+        A_cursor = W_cursor + char_width + spacing + linewidth
+        I_cursor = A_cursor + char_width + spacing + linewidth
+        T_cursor = I_cursor + char_width + spacing + linewidth
+        # vertical lines
+        W_cols = np.r_[W_cursor:W_cursor+linewidth, W_cursor+w+w:W_cursor+w+w+linewidth]
+        A_cols = np.r_[A_cursor:A_cursor+linewidth, A_cursor+w+w:A_cursor+w+w+linewidth]
+        I_cols = np.r_[I_cursor+w:I_cursor+w+linewidth]
+        T_cols = np.r_[T_cursor+w:T_cursor+w+linewidth]
+        verts = np.concatenate([W_cols, A_cols, I_cols, T_cols])
+
+        pixels[h_start:h_start + h, verts, :] = color
+        pixels[int(h_start + h/2):h_start+h, W_cursor+w:W_cursor+w+linewidth, :] = color #Vertical short part of W
+        # horizontal lines
+        W_cols = np.r_[W_cursor:W_cursor+char_width+linewidth]
+        A_cols = np.r_[A_cursor:A_cursor+char_width+linewidth]
+        I_cols = np.r_[I_cursor:I_cursor+char_width+linewidth]
+        T_cols = np.r_[T_cursor:T_cursor+char_width+linewidth]
+        bot_row = np.concatenate([W_cols, I_cols])
+        top_row = np.concatenate([A_cols, I_cols, T_cols])
+
+        pixels[h_start+h - linewidth:h_start+h, bot_row, :] = color # bottom row
+        pixels[int(h_start + h/2):int(h_start + h/2 + linewidth), A_cursor:A_cursor+w*2 + linewidth, :] = color # middle row
+        pixels[int(h_start):int(h_start + linewidth), top_row, :] = color # top row
+        
+        self.mgr.update_image(pixels, 0)
+        self.num_imgs = 0 
+
+    def wait(self):
+        self.num_imgs = 0
+
     def set_pixels(self, pixel_seq):
+        self.mgr.draw_image(0, self.x, self.y, self.width, self.height)
+        self.window.flip()
         print("Loading pixels...", end="", flush=True)        
         for index, pixels in enumerate(pixel_seq):
-            self.mgr.update_image(pixels, index)
+            self.mgr.update_image(pixels, index + 1) # + 1 to skip over wait image
         self.num_imgs = len(pixel_seq)
+        self.img_index = 1
         print("done")
 
     def _render(self):
         self.mgr.draw_image(self.img_index, self.x, self.y, self.width, self.height)
 
     def _update(self, dt):
+        if self.num_imgs == 0:
+            #Display wait message if no images
+            self.img_index = 0
+            return
         # Cycle through the images in the image manager
         self.countdown -= dt
         # Skip some images if too much time has passed
         while self.countdown < 0:
             self.countdown += self.switch_time
-            self.img_index = (self.img_index+1) % self.num_imgs
+            self.img_index = ((self.img_index+1) % self.num_imgs) + 1 # + 1 to skip over wait image
 
 def gen_rainbow_pixels(num_pixels, pixel_width, pixel_height):
     # Generates a list of pixels which is a hue rainbow when viewed sequentially 
@@ -336,16 +392,22 @@ if __name__ == "__main__":
     pixels2 = gen_solid_pixels(50, pixel_width, pixel_height)
     window = WindowWidget(500, 500)
 
+    def swap_buttons(dt, pixel_seq, *args, **kwargs):
+        left_frame.set_pixels(pixel_seq)
+
     swap = True
     def button_cb(button):
         global swap
         print(button.text)
         if button.text == "Left is better":
             if swap:
-                left_frame.set_pixels(pixels2)
+                left_frame.wait()
+                pyglet.clock.schedule_once(swap_buttons, 1, pixel_seq=pixels2)
             else:
-                left_frame.set_pixels(pixels)
+                left_frame.wait()
+                pyglet.clock.schedule_once(swap_buttons, 1, pixel_seq=pixels)
             swap = not swap
+        
 
     # Buttons
     button_frame = RelativeWidget(parent = window, left = 0, right = 0, top=0, height = 50)
