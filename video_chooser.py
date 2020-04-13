@@ -3,7 +3,7 @@ from widgets import *
 
 
 import pyglet
-from queue import Full
+from queue import Full, Empty
 from time import sleep
 from multiprocessing import Process, Queue, current_process, freeze_support
 
@@ -34,7 +34,7 @@ class VideoChooser():
     '''
 
     '''
-    def __init__(self, input_queue, output_queue, FPS=50):
+    def __init__(self, input_queue, output_queue, on_close_cb, FPS=50):
         '''
         input_queue and output_queue are Queue objects from the multiprocessing package
         '''
@@ -46,6 +46,7 @@ class VideoChooser():
         self.output_queue = output_queue
         self.trajectory_1 = self.trajectory_2 = None
         self.window = WindowWidget(800, 800, visible=False)
+        self.window.window.push_handlers(on_close = on_close_cb)
         self.button_text = ["Left is better", "Can't tell", "Tie", "Right is better"]
         self._init_choice_buttons()
         self._init_pixels()
@@ -93,11 +94,19 @@ class VideoChooser():
         # Allow user to choose new pair of trajectories.
         self._get_new_pair()
 
-    def _get_new_pair(self):
+    def _get_new_pair(self, dt=None):
         # Fetch a new pair of observations from the input queue
-        self.l_pixels.wait()
-        self.r_pixels.wait()
-        self.trajectory_1, self.trajectory_2 = self.input_queue.get()
+        if not dt:
+            self.l_pixels.wait()
+            self.r_pixels.wait()
+            self.window.window.flip()
+        try:
+            self.trajectory_1 = self.trajectory_2 = None
+            self.trajectory_1, self.trajectory_2 = self.input_queue.get_nowait()
+        except Empty:
+            # Loop back around to get more after a short amount of time to respond to window events
+            pyglet.clock.schedule_once(self._get_new_pair, 1)
+            return
         obs_1 = [obs for obs, action in self.trajectory_1]
         obs_2 = [obs for obs, action in self.trajectory_2]
         self.l_pixels.set_pixels(obs_1)
@@ -111,7 +120,6 @@ class VideoChooser():
             print("process 3 busy, queue full; removing item from prefence output queue")
             self.output_queue.get_nowait()
             self._save_triple(trajectory_1, trajectory_2, preference)
-        
 
     def run(self):
         self.window.window.set_visible()
@@ -119,9 +127,12 @@ class VideoChooser():
         pyglet.clock.schedule_interval(self.window.update, 1.0/self.FPS) #Update graphics
         pyglet.app.run()
 
-def run_video_chooser(input_queue, output_queue):
-    chooser = VideoChooser(input_queue, output_queue)
+def run_video_chooser(input_queue, output_queue, on_close_cb):
+    chooser = VideoChooser(input_queue, output_queue, on_close_cb)
     chooser.run()
+
+def window_closed_test():
+    print("window closed")
 
 def test():
     # Create queues
@@ -144,7 +155,7 @@ def test():
         else:
             trajectory_input_queue.put([traj_2, traj_1])
     
-    p = Process(target=run_video_chooser, args=(trajectory_input_queue, preference_output_queue))
+    p = Process(target=run_video_chooser, args=(trajectory_input_queue, preference_output_queue, window_closed_test))
     p.start()
 
     #Wait for user to choose

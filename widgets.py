@@ -330,7 +330,6 @@ class PixelFrame(RelativeWidget):
         self.num_imgs = 0
         self.img_index = 0
         self.mgr.draw_image(0, self.x, self.y, self.width, self.height)
-        self.window.flip()
 
     def set_pixels(self, pixel_seq):
         print("Loading pixels...")
