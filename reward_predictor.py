@@ -1,9 +1,13 @@
 from queue import Full, Empty
-
 from collections import deque
 
-# from keras.layers import Input, Conv2D, Dense
-# from keras.models import Model
+# tensorflow, keras
+import tensorflow as tf
+import tensorflow.keras as keras
+from tensorflow.keras.layers import LeakyReLU, UpSampling1D, Input, InputLayer, Reshape, Activation, Lambda, AveragePooling1D
+from tensorflow.keras.layers import Conv2D, Dense, MaxPooling2D, Flatten, BatchNormalization, Dropout, Conv2DTranspose, concatenate
+from tensorflow.keras.models import Sequential, Model
+
 
 # Overall processes:
 # A trajectory segment is a sequence of observations and actions, σ = ((o0,a0),(o1,a1),...,(ok−1,ak−1))∈(O×A)k. 
@@ -54,6 +58,7 @@ class RewardPredictor(object):
 
     def _init_model(self):
         # TODO: Create a compiled and working model to be used for learning.
+        # TODO: implement custom training and evaluation https://www.tensorflow.org/guide/keras/train_and_evaluate
         self.model = self.build_model()
     
     def _learn(self):
@@ -75,9 +80,62 @@ class RewardPredictor(object):
         print("Quitting reward predictor")
         self._stop_sig = True
 
-    def build_model(self):
-        # TODO: Builds and return a model 
-        return None
+    @staticmethod
+    def build_cnn(width=96, height=96, depth=3, print_summary=False):
+        # Build convolutional model for images input using similar architecture as Christiano 2017
+        # TODO: use L2 regularization with the adapative scheme in Section 2.2.3
+        obs_input = Input(shape = (height, width, depth), name="obs_input")
+        fks = [(8, (7,7), 3), 
+               (16, (5,5), 2),
+               (32, (3,3), 2),
+               (64, (3,3), 1)]
+        for index, (filters, kernel, strides) in enumerate(fks):
+            if index == 0:
+                x = obs_input
+            
+            x = Conv2D(filters = filters, kernel_size = kernel, strides = strides, padding='same', name=f"cnn_conv{index+1}")(x)
+            x = Activation("relu")(x)
+            x = BatchNormalization()(x)
+            x = Dropout(rate=0.5)(x)
+        
+        x = Flatten()(x)
+        x = Dense(16, activation="elu", name = "cnn_dense1")(x)
+        x = BatchNormalization()(x)
+        x = Dropout(rate=0.5)(x)
+        x = Dense(4, activation="elu", name = "cnn_dense2")(x)
+
+        model = Model(inputs=obs_input, outputs=x, name="CNN")
+        if print_summary: model.summary()
+        # return the CNN
+        return model
+
+    @staticmethod
+    def build_nn(print_summary=False):
+        action_input = Input(shape = (3,), name="act_input") # gas, brake, steer action.
+        x = Dense(16, activation="elu", name = "nn_dense1")(action_input)
+        x = BatchNormalization()(x)
+        x = Dropout(rate=0.5)(x)
+        x = Dense(4, activation="elu", name = "nn_dense2")(x)
+        model = Model(inputs=action_input, outputs=x, name="NN")
+        if print_summary: model.summary()
+        # return the NN
+        return model
+
+    @staticmethod
+    def build_model(print_summary=False):
+        # Builds and return a model with both inputs
+        cnn = RewardPredictor.build_cnn(print_summary=print_summary)
+        nn = RewardPredictor.build_nn(print_summary=print_summary)
+        combined = concatenate([cnn.output, nn.output])
+        x = Dense(16, activation="relu", name="comb_dense1")(combined)
+        x = BatchNormalization()(x)
+        x = Dropout(rate=0.5)(x)
+        x = Dense(1, activation="linear", name="output")(x) # linear prediction of the reward
+        model = Model(inputs=[cnn.input, nn.input], outputs=x)
+        if print_summary:
+            model.summary()
+            keras.utils.plot_model(model, 'combined.png', show_shapes=True)
+        return model
 
     def run(self):
         # Main process loop
@@ -96,5 +154,4 @@ def run_reward_predictor(pref_q, weight_conn, mgr_conn):
     reward_predictor.run()
 
 if __name__ == "__main__":
-    #TODO: test code
-    pass
+    cnn = RewardPredictor.build_model(print_summary=True)
