@@ -35,8 +35,7 @@ class ImageManager():
             raise IndexError(f"update_image: image_index out of bounds.")
 
         # Format data
-        pixels = np.flip(pixel_data, axis=0).flatten() # Flip so the image is right side up
-        tex_data = (GLubyte * pixels.size)( *pixels.astype('uint8'))
+        tex_data = self._format_data(pixel_data)
 
         # Get x and y offset and correct texture index
         x_offset, y_offset, tex_index = self._get_offset(image_index)
@@ -142,6 +141,18 @@ class ImageManager():
         z = index // self.imgs_per_tex
         return (x * self.img_width, y * self.img_height, z)
 
+    def _format_data(self, pixel_data):
+        pixels = np.array(pixel_data)
+        height, width, channels = pixels.shape
+        if channels == 3:
+            # Add alpha layer if not provided already
+            alpha = np.full(shape = (height, width, 1), fill_value = 255, dtype = "uint8")
+            pixels = np.concatenate((pixels, alpha), axis = 2)
+        pixels = np.flip(pixels, axis=0) # Flip so the image is right side up
+        pixels = pixels.flatten()
+        tex_data = (GLubyte * pixels.size)( *pixels.astype('uint8'))
+        return tex_data
+
     def _create_empty_texture(self):
         # Create an empty texture and returns the texture ID
         tex_id = GLuint()
@@ -204,7 +215,7 @@ class ImageManagerTester():
         for pixel_num in range(self.num_imgs):
             if pixel_num >= 100:
                 break
-            pixels = np.concatenate((zeros, alpha), axis = 2)
+            pixels = zeros # np.concatenate((zeros, alpha), axis = 2)
             if self.mode % self.num_modes == 0:
                 rgb = pixel_num % 3
                 pixels[:1, :, rgb] = 255
@@ -214,7 +225,7 @@ class ImageManagerTester():
             elif self.mode % self.num_modes == 1:
                 hue = pixel_num / self.num_imgs
                 rgb = hsv_to_rgb(h=hue, s=1, v=1)
-                colors = [col*255 for col in rgb] + [255]
+                colors = [col*255 for col in rgb] # + [255]
                 pixels[:1, :, :] = colors
                 pixels[-1:, :, :] = colors
                 pixels[:, :1, :] = colors
