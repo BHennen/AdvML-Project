@@ -29,10 +29,10 @@ BUFFER_LEN = 3000
 class RewardPredictor(object):
     '''
     '''
-    def __init__(self, input_queue, output_conn, master_conn, buffer_len):
-        self._input_queue = input_queue
-        self._output_conn = output_conn
-        self._master_conn = master_conn
+    def __init__(self, pref_q, weight_conn, mgr_conn, buffer_len):
+        self._pref_q = pref_q
+        self._weight_conn = weight_conn
+        self._mgr_conn = mgr_conn
         self._q = deque(maxlen = buffer_len)
         self._init_model()
         self._stop_sig = False
@@ -42,7 +42,7 @@ class RewardPredictor(object):
         pass
     
     def _output_model_weights(self):
-        # Outputs the current model weights to the output connection
+        # Outputs the current model weights to the weight connection
         pass
 
     def _init_model(self):
@@ -55,7 +55,7 @@ class RewardPredictor(object):
         pass
 
     def _check_for_stop(self):
-        # Read master_conn for stop signal and end gracefully if present
+        # Read mgr_conn for stop signal and end gracefully if present
         pass
 
     def build_model(self):
@@ -73,8 +73,8 @@ class RewardPredictor(object):
             self._output_model_weights()
 
 
-def run_reward_predictor(input_queue, output_conn, master_conn):
-    reward_predictor = RewardPredictor(input_queue=input_queue, output_conn=output_conn, master_conn=master_conn, buffer_len=BUFFER_LEN)
+def run_reward_predictor(pref_q, weight_conn, mgr_conn):
+    reward_predictor = RewardPredictor(pref_q=pref_q, weight_conn=weight_conn, mgr_conn=mgr_conn, buffer_len=BUFFER_LEN)
     reward_predictor.run()
 
 if __name__ == "__main__":

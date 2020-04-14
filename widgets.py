@@ -53,6 +53,11 @@ class Widget(object):
         for child in self.children:
             child.update(dt)
 
+    def close(self):
+        for child in self.children:
+            child.close()
+        self._close()
+
     def _resize(self):
         raise NotImplementedError()
 
@@ -61,6 +66,9 @@ class Widget(object):
 
     def _update(self, dt):
         raise NotImplementedError()
+
+    def _close(self):
+        pass
 
     def get_pos(self):
         return self.x, self.y
@@ -199,7 +207,10 @@ class WindowWidget(Widget):
     def __init__(self, window_width, window_height, visible=True):
         super().__init__(None, 0, 0, window_width, window_height)
         self.window = pyglet.window.Window(window_width, window_height, resizable=True, visible=visible)
-        self.window.push_handlers(on_resize = self._on_resize, on_draw = self.render)
+        self.window.push_handlers(on_resize = self._on_resize, on_draw = self.render, on_close = self.close)
+
+    def _close(self):
+        self.window.pop_handlers()
 
     def _resize(self):
         pass
@@ -250,6 +261,9 @@ class Button(CenteredWidget, pyglet.event.EventDispatcher):
 
     def _set_window(self, window):
         window.push_handlers(self)
+
+    def _close(self):
+        self.window.pop_handlers()
 
     def hit_test(self, x, y):
         return (self.x < x < self.x + self.width and

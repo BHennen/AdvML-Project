@@ -1,6 +1,5 @@
 
-from widgets import *
-
+from widgets import WindowWidget, RelativeWidget, PixelFrame, Button
 
 import pyglet
 from queue import Full, Empty
@@ -34,22 +33,31 @@ class VideoChooser():
     '''
 
     '''
-    def __init__(self, input_queue, output_queue, on_close_cb, FPS=50):
+    def __init__(self, traj_q, pref_q, mgr_conn, FPS=50):
         '''
-        input_queue and output_queue are Queue objects from the multiprocessing package
+        traj_q and pref_q are Queue objects from the multiprocessing package
         '''
         # Car racing outputs 96x96 pixels at 50 fps. FPS can be changed to make it easier? for human to tell
         self.img_w = 96
         self.img_h = 96
         self.FPS = FPS
-        self.input_queue = input_queue
-        self.output_queue = output_queue
+        self.traj_q = traj_q
+        self.pref_q = pref_q
+        self.mgr_conn = mgr_conn
         self.trajectory_1 = self.trajectory_2 = None
         self.window = WindowWidget(800, 800, visible=False)
-        self.window.window.push_handlers(on_close = on_close_cb)
+        self.window.window.push_handlers(on_close = self._on_close)
         self.button_text = ["Left is better", "Can't tell", "Tie", "Right is better"]
         self._init_choice_buttons()
         self._init_pixels()
+
+    def _on_close(self):
+        # Window requested to be closed
+        if self.mgr_conn is None:
+            pass # No manager connection so close the window.
+        else:
+            self.mgr_conn.send("close")
+            return True
 
     def _init_choice_buttons(self):
         self.button_frame = RelativeWidget(parent = self.window, left = 0, right = 0, top=0, height = 50)
@@ -73,8 +81,11 @@ class VideoChooser():
         self.button_enabled = True
 
     def _button_cb(self, button):
+        if self.trajectory_1 is None:
+            print("Wait for clips.")
+            return
+
         if not self.button_enabled:
-            print("Watch video.")
             return
         else:
             self.button_enabled = False
@@ -105,9 +116,10 @@ class VideoChooser():
             self.l_pixels.wait()
             self.r_pixels.wait()
             self.window.window.flip()
+        
+        self.trajectory_1 = self.trajectory_2 = None
         try:
-            self.trajectory_1 = self.trajectory_2 = None
-            trajectory_1, trajectory_2 = self.input_queue.get_nowait()
+            trajectory_1, trajectory_2 = self.traj_q.get_nowait()
         except Empty:
             # Loop back around to get more after a short amount of time to respond to window events
             pyglet.clock.schedule_once(self._get_new_pair, 1)
@@ -121,11 +133,11 @@ class VideoChooser():
 
     def _save_triple(self, trajectory_1, trajectory_2, preference):
         try:
-            self.output_queue.put_nowait([trajectory_1, trajectory_2, preference])
+            self.pref_q.put_nowait([trajectory_1, trajectory_2, preference])
         except Full:
             # If the output queue is full remove an item and save it again.
             print("process 3 busy, queue full; removing item from prefence output queue")
-            self.output_queue.get_nowait()
+            self.pref_q.get_nowait()
             self._save_triple(trajectory_1, trajectory_2, preference)
 
     def run(self):
@@ -134,17 +146,15 @@ class VideoChooser():
         pyglet.clock.schedule_interval(self.window.update, 1.0/self.FPS) #Update graphics
         pyglet.app.run()
 
-def run_video_chooser(input_queue, output_queue, on_close_cb):
-    chooser = VideoChooser(input_queue, output_queue, on_close_cb)
+def run_video_chooser(traj_q, pref_q, mgr_conn):
+    chooser = VideoChooser(traj_q, pref_q, mgr_conn)
     chooser.run()
 
-def window_closed_test():
-    print("window closed")
-
 def test():
+    from widgets import gen_rainbow_pixels, gen_solid_pixels
     # Create queues
-    trajectory_input_queue = Queue()
-    preference_output_queue = Queue()
+    traj_q = Queue()
+    pref_q = Queue()
 
     num_pixels=30
     pixel_width=96
@@ -158,17 +168,17 @@ def test():
     # Generate some trajectories
     for i in range(3):
         if i % 2 == 0:
-            trajectory_input_queue.put([traj_1, traj_2])
+            traj_q.put([traj_1, traj_2])
         else:
-            trajectory_input_queue.put([traj_2, traj_1])
+            traj_q.put([traj_2, traj_1])
     
-    p = Process(target=run_video_chooser, args=(trajectory_input_queue, preference_output_queue, window_closed_test))
+    p = Process(target=run_video_chooser, args=(traj_q, pref_q, None))
     p.start()
 
     #Wait for user to choose
     # NOTE: If can't tell is chosen, this process will block.
     for i in range(3):
-        trajectory_1, trajectory_2, preference = preference_output_queue.get()
+        trajectory_1, trajectory_2, preference = pref_q.get()
         print(preference)
     
     sleep(5)
@@ -176,13 +186,13 @@ def test():
     # Generate some more trajectories
     for i in range(3):
         if i % 2 == 0:
-            trajectory_input_queue.put([traj_1, traj_2])
+            traj_q.put([traj_1, traj_2])
         else:
-            trajectory_input_queue.put([traj_2, traj_1])
+            traj_q.put([traj_2, traj_1])
 
     #Wait for user to choose
     for i in range(3):
-        trajectory_1, trajectory_2, preference = preference_output_queue.get()
+        trajectory_1, trajectory_2, preference = pref_q.get()
         print(preference)
 
 
