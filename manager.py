@@ -19,10 +19,6 @@ class CarRacingManager(object):
             ppipe, mpipe = Pipe()
             self.p_pipes.append(ppipe)
             self.m_pipes.append(mpipe)
-    
-    def _video_chooser_on_close(self):
-        # video chooser window requested to be closed
-        self.stop()
 
     def _check_msgs(self):
         # check process 2 (video chooser) pipe
@@ -32,6 +28,7 @@ class CarRacingManager(object):
         self._handle_proc_2_msgs(msgs)
 
     def _handle_proc_2_msgs(self, msgs):
+        # Handles messages passed to manager from process 2 (video chooser)
         for msg in msgs:
             if msg == "close":
                 self.stop()
@@ -48,16 +45,20 @@ class CarRacingManager(object):
         self.execute = False
 
     def run_full_program(self):
+        # Initialize and start processes
         # TODO: agent process
         self.processes.append(Process(target=run_video_chooser, args=(self.traj_q, self.pref_q, self.p_pipes[1])))
         # self.processes.append(Process(target=run_reward_predictor, args=(self.pref_q, self.w_pipes[1], self.p_pipes[2])))
+        
         for p in self.processes:
             p.start()
+
+        # Manager checks messages and reacts accordingly
         self.execute = True
         while self.execute:
             self._check_msgs()
             sleep(1)
-        print("Quitting main program.")
+        print("Manager quitting.")
 
 if __name__ == "__main__":
     mgr = CarRacingManager()
