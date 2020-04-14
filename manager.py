@@ -4,7 +4,7 @@ from multiprocessing import Process, Queue, Pipe
 from time import sleep
 
 from video_chooser import run_video_chooser
-# from reward_predictor import run_reward_predictor
+from reward_predictor import run_reward_predictor
 
 class CarRacingManager(object):
     def __init__(self):
@@ -48,7 +48,7 @@ class CarRacingManager(object):
         # Initialize and start processes
         # TODO: agent process
         self.processes.append(Process(target=run_video_chooser, args=(self.traj_q, self.pref_q, self.p_pipes[1])))
-        # self.processes.append(Process(target=run_reward_predictor, args=(self.pref_q, self.w_pipes[1], self.p_pipes[2])))
+        self.processes.append(Process(target=run_reward_predictor, args=(self.pref_q, self.w_pipes[1], self.p_pipes[2])))
         
         for p in self.processes:
             p.start()

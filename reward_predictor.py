@@ -1,7 +1,9 @@
+from queue import Full, Empty
+
 from collections import deque
 
-from keras.layers import Input, Conv2D, Dense
-from keras.models import Model
+# from keras.layers import Input, Conv2D, Dense
+# from keras.models import Model
 
 # Overall processes:
 # A trajectory segment is a sequence of observations and actions, σ = ((o0,a0),(o1,a1),...,(ok−1,ak−1))∈(O×A)k. 
@@ -39,33 +41,49 @@ class RewardPredictor(object):
         
     def _get_comparisons(self):
         # Gets all available comparisons and stores them in queue
-        pass
+        while True:
+            try:
+                triple = self._pref_q.get_nowait()
+                self._q.append(triple)
+            except Empty:
+                break
     
     def _output_model_weights(self):
-        # Outputs the current model weights to the weight connection
+        # TODO: Outputs the current model weights to the weight connection
         pass
 
     def _init_model(self):
-        # Create a compiled and working model to be used for learning.
+        # TODO: Create a compiled and working model to be used for learning.
         self.model = self.build_model()
-        pass
     
     def _learn(self):
-        # Learns from the buffer
+        # TODO: Learns from the buffer
         pass
 
-    def _check_for_stop(self):
-        # Read mgr_conn for stop signal and end gracefully if present
-        pass
+    def _check_msgs(self):
+        # Read manager signals
+        msgs = []
+        while self._mgr_conn.poll():
+            msgs.append(self._mgr_conn.recv())
+
+        for msg in msgs:
+            if msg == "stop":
+                self.stop()
+
+    def stop(self):
+        # Stop process execution
+        print("Quitting reward predictor")
+        self._stop_sig = True
 
     def build_model(self):
-        # Builds and return a model 
-        pass
+        # TODO: Builds and return a model 
+        return None
 
     def run(self):
         # Main process loop
         while True:
-            if self._check_for_stop():
+            self._check_msgs()
+            if self._stop_sig:
                 # Program signalled to stop, end loop
                 break
             self._get_comparisons()
@@ -78,4 +96,5 @@ def run_reward_predictor(pref_q, weight_conn, mgr_conn):
     reward_predictor.run()
 
 if __name__ == "__main__":
+    #TODO: test code
     pass
