@@ -69,10 +69,15 @@ class VideoChooser():
         self.r_pixels = PixelFrame(parent = self.pixel_frame, pixel_width = self.img_w, pixel_height = self.img_h,
                              FPS = self.FPS, left=0.5, right=0, top=0, bottom=0)
 
+    def _enable_buttons(self, dt):
+        self.button_enabled = True
+
     def _button_cb(self, button):
-        if self.trajectory_1 is None:
-            print("No comparison loaded.")
+        if not self.button_enabled:
+            print("Watch video.")
             return
+        else:
+            self.button_enabled = False
 
         if button.text == "Left is better":
             print("Left chosen")
@@ -102,15 +107,17 @@ class VideoChooser():
             self.window.window.flip()
         try:
             self.trajectory_1 = self.trajectory_2 = None
-            self.trajectory_1, self.trajectory_2 = self.input_queue.get_nowait()
+            trajectory_1, trajectory_2 = self.input_queue.get_nowait()
         except Empty:
             # Loop back around to get more after a short amount of time to respond to window events
             pyglet.clock.schedule_once(self._get_new_pair, 1)
             return
-        obs_1 = [obs for obs, action in self.trajectory_1]
-        obs_2 = [obs for obs, action in self.trajectory_2]
+        obs_1 = [obs for obs, action in trajectory_1]
+        obs_2 = [obs for obs, action in trajectory_2]
         self.l_pixels.set_pixels(obs_1)
         self.r_pixels.set_pixels(obs_2)
+        self.trajectory_1, self.trajectory_2 = trajectory_1, trajectory_2
+        pyglet.clock.schedule_once(self._enable_buttons, 0.5)
 
     def _save_triple(self, trajectory_1, trajectory_2, preference):
         try:
