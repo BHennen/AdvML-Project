@@ -1,5 +1,6 @@
 
 from widgets import WindowWidget, RelativeWidget, PixelFrame, Button
+from communication import Message
 
 import pyglet
 from queue import Full, Empty
@@ -56,7 +57,7 @@ class VideoChooser():
         if self.mgr_conn is None:
             pass # No manager connection so close the window.
         else:
-            self.mgr_conn.send("close")
+            self.mgr_conn.send(Message(sender="proc2", title="close"))
             return True
 
     def _check_msgs(self, dt):
@@ -69,14 +70,15 @@ class VideoChooser():
             msgs.append(self.mgr_conn.recv())
         
         # see if we need to close the window
-        if "stop" in msgs:
-            print("Quitting video chooser")
-            # Remove handlers
-            for holder in self.button_frame.children:
-                for button in holder.children:
-                    button.pop_handlers()
-            self.window.close() # Signal window to close
-            self.window.window.close() # Actually close window
+        for msg in msgs:
+            if msg.sender == "mgr":
+                if msg.title == "stop":
+                    # Remove handlers
+                    for holder in self.button_frame.children:
+                        for button in holder.children:
+                            button.pop_handlers()
+                    self.window.close() # Signal window to close
+                    self.window.window.close() # Actually close window
 
     def _init_choice_buttons(self):
         self.button_frame = RelativeWidget(parent = self.window, left = 0, right = 0, top=0, height = 50)
@@ -165,6 +167,7 @@ class VideoChooser():
         pyglet.clock.schedule_interval(self._check_msgs, 1)
         pyglet.clock.schedule_interval(self.window.update, 1.0/self.FPS) #Update graphics
         pyglet.app.run()
+        print("Quitting video chooser")
 
 def run_video_chooser(traj_q, pref_q, mgr_conn):
     chooser = VideoChooser(traj_q, pref_q, mgr_conn)
