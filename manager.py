@@ -3,8 +3,10 @@
 from multiprocessing import Process, Queue, Pipe
 from time import sleep
 
+from communication import Message
 from video_chooser import run_video_chooser
-# from reward_predictor import run_reward_predictor
+from reward_predictor import run_reward_predictor
+
 
 class CarRacingManager(object):
     def __init__(self):
@@ -23,21 +25,23 @@ class CarRacingManager(object):
     def _check_msgs(self):
         # check process 2 (video chooser) pipe
         msgs = []
-        while self.m_pipes[1].poll():
-            msgs.append(self.m_pipes[1].recv())
-        self._handle_proc_2_msgs(msgs)
+        for pipe in self.m_pipes:
+            while pipe.poll():
+                msgs.append(pipe.recv())
+        self._process_messages(msgs)
 
-    def _handle_proc_2_msgs(self, msgs):
-        # Handles messages passed to manager from process 2 (video chooser)
+    def _process_messages(self, msgs):
+        # Handles messages passed to manager from processes
         for msg in msgs:
-            if msg == "close":
-                self.stop()
+            if msg.sender == "proc2":
+                if msg.title == "close":
+                    self.stop()
 
     def stop(self):
         # Signal all processes to stop.
         print("Signalling processes to stop...")
         for p in self.m_pipes:
-            p.send("stop")
+            p.send(Message(sender="mgr", title="stop"))
             
         for p in self.processes:
             p.join()
@@ -48,7 +52,7 @@ class CarRacingManager(object):
         # Initialize and start processes
         # TODO: agent process
         self.processes.append(Process(target=run_video_chooser, args=(self.traj_q, self.pref_q, self.p_pipes[1])))
-        # self.processes.append(Process(target=run_reward_predictor, args=(self.pref_q, self.w_pipes[1], self.p_pipes[2])))
+        self.processes.append(Process(target=run_reward_predictor, args=(self.pref_q, self.w_pipes[1], self.p_pipes[2])))
         
         for p in self.processes:
             p.start()

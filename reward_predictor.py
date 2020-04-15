@@ -1,7 +1,17 @@
+from communication import Message
+
+from queue import Full, Empty
 from collections import deque
 
-from keras.layers import Input, Conv2D, Dense
-from keras.models import Model
+import numpy as np
+
+# tensorflow, keras
+import tensorflow as tf
+import tensorflow.keras as keras
+from tensorflow.keras.layers import LeakyReLU, UpSampling1D, Input, InputLayer, Reshape, Activation, Lambda, AveragePooling1D
+from tensorflow.keras.layers import Conv2D, Dense, MaxPooling2D, Flatten, BatchNormalization, Dropout, Conv2DTranspose, concatenate
+from tensorflow.keras.models import Sequential, Model
+
 
 # Overall processes:
 # A trajectory segment is a sequence of observations and actions, σ = ((o0,a0),(o1,a1),...,(ok−1,ak−1))∈(O×A)k. 
@@ -26,6 +36,140 @@ from keras.models import Model
 
 BUFFER_LEN = 3000
 
+class RewardPredictorModel(object):
+    '''
+    Model to be trained using user preferences of (trajectory, )
+    '''
+    def __init__(self, ensemble_size=3, l_rate=0.001):
+        self.models=[]
+        for _ in range(ensemble_size):
+            self.models.append(self._build_model())
+        self.optimizer = keras.optimizers.Adam(learning_rate=l_rate)
+
+    def fit(self, triple):
+        '''Fits a triple of (trajectory_1, trajectory_2, preference) to the model, updating the model weights
+        '''
+        traj_1, traj_2, pref = triple
+        obs_1, actions_1 = np.array(list(zip(*traj_1)))
+        obs_2, actions_2 = np.array(list(zip(*traj_2)))
+        for model in self.models:
+            # Open a GradientTape to record the operations run
+            # during the forward pass, which enables autodifferentiation.
+            with tf.GradientTape() as tape:
+                # Run the forward pass of the layer. The operations that the layer applies
+                # to its inputs are going to be recorded on the GradientTape.
+                # Predictions for this trajectory pair
+                t1_r_hat = model(inputs={"obs_input":obs_1, "act_input":actions_1}, training=True)
+                t2_r_hat = model(inputs={"obs_input":obs_2, "act_input":actions_2}, training=True)
+                # Compute the loss value for this minibatch.
+                loss_value = self._loss_fn(t1_r_hat, t2_r_hat, pref)
+
+            # Use the gradient tape to automatically retrieve
+            # the gradients of the trainable variables with respect to the loss.
+            grads = tape.gradient(loss_value, model.trainable_weights)
+
+            # Run one step of gradient descent by updating
+            # the value of the variables to minimize the loss.
+            self.optimizer.apply_gradients(zip(grads, model.trainable_weights))
+
+    def predict(self, trajectory):
+        '''
+        Predicts reward using the given trajectory.
+        Trajectory should be a list of tuples [(observation_1, action_1)...]
+        Returns a tuple of (reward, variance)
+        '''
+        predictions = []
+        for model in self.models:
+            rewards = model.predict(np.array(trajectory))
+            total_reward = np.sum(rewards)
+            predictions.append(total_reward)
+        avg_prediction = np.mean(predictions)
+        variance = np.var(predictions)
+        return (avg_prediction, variance)
+    
+    def get_weights(self):
+        # Return a list of weights associated with this model ensemble
+        weights = []
+        for model in self.models:
+            weights.append(model.get_weights())
+        return weights
+    
+    def set_weights(self, weights):
+        # Sets the weights of models in the ensemble. Should be compatible with get_weights
+        for index, weight in enumerate(weights):
+            self.models[index].set_weights(weight)
+
+    # Loss function as described in paper by Christiano, Paul et. al. 2017
+    def _loss_fn(self, t1_r_hat, t2_r_hat, pref):
+        t1_rsum = np.sum(t1_r_hat)
+        t2_rsum = np.sum(t2_r_hat)
+        max_reward = np.max([t1_rsum, t2_rsum])
+        
+        t1_exp = np.exp(t1_rsum - max_reward)
+        t2_exp = np.exp(t2_rsum - max_reward)
+
+        p_hat_1_gt_2 = t1_exp / (t1_exp + t2_exp)
+        p_hat_2_gt_1 = t2_exp / (t2_exp + t1_exp)
+
+        loss = -1 * (pref[0] * p_hat_1_gt_2 + pref[1] * p_hat_2_gt_1)
+        return loss
+
+    def _build_cnn(self, width=96, height=96, depth=3, print_summary=False):
+        # Build convolutional model for images input using similar architecture as Christiano 2017
+        # TODO: use L2 regularization with the adapative scheme in Section 2.2.3
+        obs_input = Input(shape = (height, width, depth), name="obs_input")
+        fks = [(8, (7,7), 3), 
+               (16, (5,5), 2),
+               (32, (3,3), 2),
+               (64, (3,3), 1)]
+        for index, (filters, kernel, strides) in enumerate(fks):
+            if index == 0:
+                x = obs_input
+            
+            x = Conv2D(filters = filters, kernel_size = kernel, strides = strides, padding='same', name=f"cnn_conv{index+1}")(x)
+            x = Activation("relu")(x)
+            x = BatchNormalization()(x)
+            x = Dropout(rate=0.5)(x)
+        
+        x = Flatten()(x)
+        x = Dense(16, activation="elu", name = "cnn_dense1")(x)
+        x = BatchNormalization()(x)
+        x = Dropout(rate=0.5)(x)
+        x = Dense(4, activation="elu", name = "cnn_dense2")(x)
+
+        model = Model(inputs=obs_input, outputs=x, name="CNN")
+        if print_summary: model.summary()
+        # return the CNN
+        return model
+
+    def _build_nn(self, print_summary=False):
+        action_input = Input(shape = (3,), name="act_input") # gas, brake, steer action.
+        x = Dense(16, activation="elu", name = "nn_dense1")(action_input)
+        x = BatchNormalization()(x)
+        x = Dropout(rate=0.5)(x)
+        x = Dense(4, activation="elu", name = "nn_dense2")(x)
+        model = Model(inputs=action_input, outputs=x, name="NN")
+        if print_summary: model.summary()
+        # return the NN
+        return model
+
+    def _build_model(self, print_summary=False):
+        # Builds and return a model with both inputs
+        cnn = self._build_cnn()
+        nn = self._build_nn()
+        combined = concatenate([cnn.output, nn.output])
+        x = Dense(16, activation="relu", name="comb_dense1")(combined)
+        x = BatchNormalization()(x)
+        x = Dropout(rate=0.5)(x)
+        x = Dense(1, activation="linear", name="output")(x) # linear prediction of the reward
+        # normalize the rewards produced by rˆ to have mean close to 0 and standard deviation close to 1.
+        x = BatchNormalization()(x) 
+        model = Model(inputs=[cnn.input, nn.input], outputs=x)
+        if print_summary:
+            model.summary()
+        return model
+
+
 class RewardPredictor(object):
     '''
     '''
@@ -34,48 +178,57 @@ class RewardPredictor(object):
         self._weight_conn = weight_conn
         self._mgr_conn = mgr_conn
         self._q = deque(maxlen = buffer_len)
-        self._init_model()
+        self.model = RewardPredictorModel()
         self._stop_sig = False
         
     def _get_comparisons(self):
         # Gets all available comparisons and stores them in queue
-        pass
+        while True:
+            try:
+                triple = self._pref_q.get_nowait()
+                self._q.append(triple)
+            except Empty:
+                break
     
     def _output_model_weights(self):
         # Outputs the current model weights to the weight connection
-        pass
+        msg = Message(sender="proc3", title="weights", content=self.model.get_weights())
+        self._weight_conn.send(msg)
 
-    def _init_model(self):
-        # Create a compiled and working model to be used for learning.
-        self.model = self.build_model()
-        pass
-    
     def _learn(self):
-        # Learns from the buffer
-        pass
+        # Learns from the buffer, iterating over the whole queue
+        for triple in self._q:
+            self.model.fit(triple)
 
-    def _check_for_stop(self):
-        # Read mgr_conn for stop signal and end gracefully if present
-        pass
+    def _check_msgs(self):
+        # Read manager signals
+        msgs = []
+        while self._mgr_conn.poll():
+            msgs.append(self._mgr_conn.recv())
 
-    def build_model(self):
-        # Builds and return a model 
-        pass
+        for msg in msgs:
+            if msg.title == "stop":
+                self.stop()
+
+    def stop(self):
+        # Stop process execution
+        self._stop_sig = True
 
     def run(self):
         # Main process loop
         while True:
-            if self._check_for_stop():
+            self._check_msgs()
+            if self._stop_sig:
                 # Program signalled to stop, end loop
                 break
             self._get_comparisons()
             self._learn()
-            self._output_model_weights()
-
+            self._output_model_weights()        
+        print("Quitting reward predictor")
 
 def run_reward_predictor(pref_q, weight_conn, mgr_conn):
     reward_predictor = RewardPredictor(pref_q=pref_q, weight_conn=weight_conn, mgr_conn=mgr_conn, buffer_len=BUFFER_LEN)
     reward_predictor.run()
 
 if __name__ == "__main__":
-    pass
+    model = RewardPredictorModel()
