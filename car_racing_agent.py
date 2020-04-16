@@ -28,6 +28,7 @@ import heapq
 
 from car_racing_base import CarRacing
 from reward_predictor import RewardPredictorModel
+from communication import Message
 
 PROCESS_ID = 'proc1'
 CONSOLE_UPDATE_INTERVAL = 10
@@ -142,8 +143,17 @@ class SegmentSelector():
             except Full as e:
                 pass
 
+mgr_kill_sig = False
 
-def run_agent_process(traj_q):
+def _process_message(message):
+    global mgr_kill_sig
+    message: Message
+    if message.sender == "mgr" and message.title == "stop":
+        mgr_kill_sig = True
+
+
+def run_agent_process(traj_q, weight_pipe, mgr_pipe):
+    global mgr_kill_sig
     run_agent = True
     do_learn_policy = False
     render_game = True
@@ -162,10 +172,22 @@ def run_agent_process(traj_q):
     current_state = env.reset()
 
     i_step = 0
-    while run_agent:
+    while run_agent and not mgr_kill_sig:
         # Debug output
         if i_step % CONSOLE_UPDATE_INTERVAL == 0:
             print(f"Update: Iteration={i_step}")
+
+        # Check pipe for new weights
+        if weight_pipe.poll():
+            weights = weight_pipe.recv()
+            while weight_pipe.poll():
+                weights = weight_pipe.recv()
+            reward_predictor_model.set_weights(weights)
+
+        # Check mgr pipe for new weights
+        while mgr_pipe.poll():
+            message = mgr_pipe.recv()
+            _process_message(message)
 
         # Render (if desired)
         if render_game:

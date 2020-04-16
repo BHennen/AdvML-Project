@@ -52,7 +52,7 @@ class CarRacingManager(object):
 
     def run_full_program(self):
         # Initialize and start processes
-        self.processes.append(Process(target=run_agent_process, args=(self.traj_q,)))
+        self.processes.append(Process(target=run_agent_process, args=(self.traj_q, self.w_pipes[1], self.p_pipes[0])))
         self.processes.append(Process(target=run_video_chooser, args=(self.traj_q, self.pref_q, self.p_pipes[1])))
         self.processes.append(Process(target=run_reward_predictor, args=(self.pref_q, self.w_pipes[1], self.p_pipes[2])))
         
