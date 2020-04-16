@@ -48,7 +48,7 @@ class VideoChooser():
         self.trajectory_1 = self.trajectory_2 = None
         self.window = WindowWidget(800, 800, visible=False)
         self.window.window.push_handlers(on_close = self._on_close)
-        self.button_text = ["Left is better", "Can't tell", "Tie", "Right is better"]
+        self.button_text = ["Left is better", "Can't tell", "Tie", "Right is better", "Render"]
         self._init_choice_buttons()
         self._init_pixels()
 
@@ -102,6 +102,10 @@ class VideoChooser():
         self.button_enabled = True
 
     def _button_cb(self, button):
+        if button.text == "Render":
+            self.mgr_conn.send(Message(sender="proc2", title="render"))
+            return # don't get new pair
+        
         if self.trajectory_1 is None:
             print("Wait for clips.")
             return
@@ -112,19 +116,15 @@ class VideoChooser():
             self.button_enabled = False
 
         if button.text == "Left is better":
-            print("Left chosen")
             preference = [1, 0]
             self._save_triple(self.trajectory_1, self.trajectory_2, preference)
         elif button.text == "Right is better":
-            print("Right chosen")
             preference = [0, 1]
             self._save_triple(self.trajectory_1, self.trajectory_2, preference)
         elif button.text == "Tie":
-            print("Tie chosen")
             preference = [0.5, 0.5]
             self._save_triple(self.trajectory_1, self.trajectory_2, preference)
         elif button.text == "Can't tell":
-            print("Can't tell chosen")
             # Do not save triple; discard example.
             pass
         
