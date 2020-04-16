@@ -143,77 +143,92 @@ class SegmentSelector():
             except Full as e:
                 pass
 
-mgr_kill_sig = False
+class AgentProcess(object):
+    def __init__(self, traj_q, weight_pipe, mgr_pipe):
+        self.traj_q = traj_q
+        self.weight_pipe = weight_pipe
+        self.mgr_pipe = mgr_pipe
+        self.mgr_kill_sig = False
+        self.reward_predictor_model = RewardPredictorModel()
+        self.seg_select = SegmentSelector(traj_q)        
+        self.run_agent = True
+        self.do_learn_policy = False
+        self.render_game = True
+        self.env = CarRacing()
+        self.agent = Agent(self.env)
 
-def _process_message(message):
-    global mgr_kill_sig
-    message: Message
-    if message.sender == "mgr" and message.title == "stop":
-        mgr_kill_sig = True
+    def _process_messages(self):
+        # Check weight pipe for new weights
+        msg = None
+        while self.weight_pipe.poll():
+            msg = self.weight_pipe.recv()
+        if msg and msg.sender == "proc3" and msg.title == "weights":
+            self.reward_predictor_model.set_weights(msg.content)
+
+        # Check mgr pipe for kill signal
+        while self.mgr_pipe.poll():
+            msg = self.mgr_pipe.recv()
+            if msg.sender == "mgr" and msg.title == "stop":
+                self.mgr_kill_sig = True
+
+    def _stop(self):
+        ''' Called when process asked to terminate by mgr
+        '''
+        pass
+
+    def _agent_step(self):
+        ''' One step of the agent
+        '''
+        # Render (if desired)
+        if self.render_game:
+            self.env.render()
+
+        # Get agent action
+        action = self.agent.select_action(self.current_state)
+        trajectory = (current_state, action)
+        # Get state
+        predicted_reward, variance = self.reward_predictor_model.predict([trajectory])
+
+        # Update state (perform action)
+        next_state, _, finished, _ = self.env.step(action)
+        self.run_agent = not finished
+
+        # Update segment
+        self.seg_select.update_segment(trajectory, variance)
+
+        # If we're training the policy, do so here
+        if self.do_learn_policy:
+            pass
+
+        self.current_state = next_state
+
+    def run(self):
+        ''' Main loop for process 3
+        '''
+        # Set initial state
+        self.current_state = env.reset()
+
+        # Main process loop
+        i_step = 0
+        while True:
+            # Debug output
+            if i_step % CONSOLE_UPDATE_INTERVAL == 0:
+                print(f"Update: Iteration={i_step}")
+
+            self._process_messages()
+            if self.mgr_kill_sig:
+                self._stop()
+                break # Break out of loop to end process
+            
+            self._agent_step()
+
+            i_step += 1
 
 
 def run_agent_process(traj_q, weight_pipe, mgr_pipe):
-    global mgr_kill_sig
-    run_agent = True
-    do_learn_policy = False
-    render_game = True
-
-    reward_predictor_model = RewardPredictorModel()
-
-    # Setup Env
-    env = CarRacing()
-
-    # Setup Agent
-    agent = Agent(env)
-
-    # Setup segment selector
-    seg_select = SegmentSelector(traj_q)
-
-    current_state = env.reset()
-
-    i_step = 0
-    while run_agent and not mgr_kill_sig:
-        # Debug output
-        if i_step % CONSOLE_UPDATE_INTERVAL == 0:
-            print(f"Update: Iteration={i_step}")
-
-        # Check pipe for new weights
-        if weight_pipe.poll():
-            weights = weight_pipe.recv()
-            while weight_pipe.poll():
-                weights = weight_pipe.recv()
-            reward_predictor_model.set_weights(weights)
-
-        # Check mgr pipe for new weights
-        while mgr_pipe.poll():
-            message = mgr_pipe.recv()
-            _process_message(message)
-
-        # Render (if desired)
-        if render_game:
-            env.render()
-
-        # Get agent action
-        action = agent.select_action(current_state)
-        trajectory = (current_state, action)
-        # Get state
-        predicted_reward, variance = reward_predictor_model.predict([trajectory])
-
-        # Update state (perform action)
-        next_state, _, finished, _ = env.step(action)
-        run_agent = not finished
-
-        # Update segment
-        seg_select.update_segment(trajectory, variance)
-
-        # If we're training the policy, do so here
-        if do_learn_policy:
-            pass
-
-        current_state = next_state
-
-        # Update iterator
-        i_step += 1
+    agent_proc = AgentProcess(traj_q, weight_pipe, mgr_pipe)
+    agent_proc.run()
 
 if __name__ == '__main__':
-    run_agent_process(Queue())
+    a, b = Pipe() # dummy pipe connections
+    run_agent_process(Queue(), a, b)
