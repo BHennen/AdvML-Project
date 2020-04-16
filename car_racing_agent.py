@@ -21,7 +21,7 @@ from keras.layers import Dense, Conv2D, MaxPooling2D, Flatten, Input, Dropout
 from keras.regularizers import l2
 from keras.optimizers import Adam
 import numpy as np
-from multiprocessing import Queue
+from multiprocessing import Queue, Pipe
 from queue import Full
 
 import heapq
@@ -219,7 +219,7 @@ class AgentProcess(object):
             if self.mgr_kill_sig:
                 self._stop()
                 break # Break out of loop to end process
-            
+
             self._agent_step()
 
             i_step += 1
