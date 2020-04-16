@@ -20,6 +20,7 @@ from keras import Model
 from keras.layers import Dense, Conv2D, MaxPooling2D, Flatten, Input, Dropout
 from keras.regularizers import l2
 from keras.optimizers import Adam
+from keras.initializers import RandomNormal
 import numpy as np
 from multiprocessing import Queue, Pipe
 from queue import Full
@@ -28,7 +29,6 @@ import heapq
 
 from car_racing_base import CarRacing
 from reward_predictor import RewardPredictorModel
-from communication import Message
 
 PROCESS_ID = 'proc1'
 CONSOLE_UPDATE_INTERVAL = 10
@@ -57,10 +57,10 @@ class Agent():
         x = MaxPooling2D((2, 2))(x)
         x = Flatten(name='flatten')(x)
         # Dense layers
-        x = Dense(24, activation="relu", name='dense_1', kernel_regularizer=l2(l2_reg_val))(x)
-        output1 = Dense(3, name='out1', activation='sigmoid')(x)
-        output2 = Dense(2, name='out2', activation='sigmoid')(x)
-        output3 = Dense(2, name='out3', activation='sigmoid')(x)
+        x = Dense(24, activation="relu", name='dense_1', kernel_initializer=RandomNormal(), kernel_regularizer=l2(l2_reg_val))(x)
+        output1 = Dense(3, name='out1', activation='softmax', kernel_initializer=RandomNormal())(x)
+        output2 = Dense(2, name='out2', activation='softmax', kernel_initializer=RandomNormal())(x)
+        output3 = Dense(2, name='out3', activation='softmax', kernel_initializer=RandomNormal())(x)
         model = Model(inputs=[input_tensor], outputs=[output1, output2, output3], name='agent_policy')
         model.compile(loss="mean_squared_error", optimizer=Adam(lr=self.learning_rate, beta_1=0.99, epsilon=10**-5))
         if print_summary:
@@ -70,33 +70,39 @@ class Agent():
     def select_action(self, observation):
         # Get action, append both to history
         predictions = self.policy.predict(np.array([observation]))
-        action_idxs = np.array([np.argmax(pred_i) for pred_i in predictions])
+        predictions = [pred_i.flatten() for pred_i in predictions]
+        action_idxs = []
+        for pred_i in predictions:
+            a = np.indices((len(pred_i),)).flatten()
+            p = pred_i
+            action_idxs.append(np.random.choice(a=a, size=1, p=p))
+        action_idxs = np.array(action_idxs).flatten()
         return action_idxs
 
 class Segment():
-
-    def __init__(self, trajectory, avg_variance):
+    def __init__(self, trajectory, variance):
         self.trajectory = trajectory
-        self.length = len(self.trajectory)
-        self.avg_variance = avg_variance
+        self.variance = variance
+
+    def __lt__(self, other):
+        other: Segment
+        return self.variance < other.variance
 
 
 class SegmentSelector():
     SEGMENT_LENGTH = 100
-    MIN_AVG_VARIANCE = 0.5
     PQUEUE_MAX_SIZE = 50
-    MAX_TQUEUE_SIZE = 50
 
-    def __init__(self, trajectory_queue):
+    def __init__(self, trajectory_queue, reward_predictor_model, verbose=False):
         self.trajectory_queue = trajectory_queue
+        self.reward_predictor_model = reward_predictor_model
         self.current_trajectory = list()
-        self.current_variance = 0
-        self.avg_variance = 0
         self.trajectory_pqueue = list()
         heapq.heapify(self.trajectory_pqueue)
         self.total_frames = 0
         self.total_segments = 0
         self.initial_values_generated = False
+        self.verbose = verbose
 
     def load_pqueue(self):
         ret = list()
@@ -104,58 +110,70 @@ class SegmentSelector():
         return ret
 
     def end_segment(self):
-        heapq.heappush(self.trajectory_pqueue, (-self.avg_variance, Segment(self.current_trajectory, self.avg_variance)))
-        self.current_trajectory = list()
-        self.avg_variance = self.current_variance / len(self.current_trajectory)
-        self.current_variance = 0
-        self.total_segments += 1
+        # Determine variance of trajectory
+        reward, variance = self.reward_predictor_model.predict(self.current_trajectory)
+        ins_trajectory = Segment(self.current_trajectory, -variance)
 
-        if self.total_segments >= self.PQUEUE_MAX_SIZE:
-            self.initial_values_generated = True
-            msg = self.get_segments()
+        if self.verbose:
+            print(f"<CarRacingAgent.SegmentSelector> - Recording trajectory, reward={reward},variance={variance}")
+
+        # Put trajectory into heap
+        if self.total_segments < self.PQUEUE_MAX_SIZE:
+            self.total_segments += 1
+            heapq.heappush(self.trajectory_pqueue, ins_trajectory)
+        elif self.total_segments > 1:
+            heapq.heapreplace(self.trajectory_pqueue, ins_trajectory)
+            msg = self.get_next_segments()
             try:
+                if self.verbose:
+                    print(f"<CarRacingAgent.SegmentSelector> - Sending trajectory to process 3, variance={-variance}")
                 self.trajectory_queue.put_nowait(msg)
+                self.total_segments -= 2
             except Full as e:
+                if self.verbose:
+                    print(f"<CarRacingAgent.SegmentSelector> - Queue is full! Cannot send additional trajectories")
+                s1, s2 = msg
+                heapq.heappush(self.trajectory_pqueue, s1)
+                heapq.heappush(self.trajectory_pqueue, s2)
                 pass
+        # Reset vars
+        self.current_trajectory = list()
 
-    def get_segments(self):
+    def get_next_segments(self):
         s1, s2 = heapq.heappop(self.trajectory_pqueue), heapq.heappop(self.trajectory_pqueue)
-        var, traj = s1
-        var = -var
-        s1 = (var, traj)
-        var, traj = s2
-        var = -var
-        s2 = (var, traj)
-        msg = (s1, s2)
+        s1: Segment
+        s1.variance, s2.variance = -s1.variance, -s2.variance
+        msg = ((s1.variance, s1.trajectory), (s2.variance, s2.trajectory))
         return msg
 
     def update_segment(self, trajectory, variance):
         self.total_frames += 1
         self.current_trajectory.append(trajectory)
-        self.current_variance += variance
 
-        if len(trajectory) >= self.SEGMENT_LENGTH:
+        if len(self.current_trajectory) >= self.SEGMENT_LENGTH:
             self.end_segment()
 
         if self.initial_values_generated:
             try:
-                self.trajectory_queue.put_nowait(self.get_segments())
+                self.trajectory_queue.put_nowait(self.get_next_segments())
             except Full as e:
                 pass
 
 class AgentProcess(object):
-    def __init__(self, traj_q, weight_pipe, mgr_pipe):
+    def __init__(self, traj_q, weight_pipe, mgr_pipe, verbose=False):
         self.traj_q = traj_q
         self.weight_pipe = weight_pipe
         self.mgr_pipe = mgr_pipe
         self.mgr_kill_sig = False
         self.reward_predictor_model = RewardPredictorModel()
-        self.seg_select = SegmentSelector(traj_q)        
+        self.seg_select = SegmentSelector(traj_q, self.reward_predictor_model, verbose=verbose)
         self.run_agent = True
         self.do_learn_policy = False
         self.render_game = True
         self.env = CarRacing()
         self.agent = Agent(self.env)
+        self.current_state = None
+        self.verbose = verbose
 
     def _process_messages(self):
         # Check weight pipe for new weights
@@ -185,7 +203,7 @@ class AgentProcess(object):
 
         # Get agent action
         action = self.agent.select_action(self.current_state)
-        trajectory = (current_state, action)
+        trajectory = (self.current_state, action)
         # Get state
         predicted_reward, variance = self.reward_predictor_model.predict([trajectory])
 
@@ -206,13 +224,13 @@ class AgentProcess(object):
         ''' Main loop for process 3
         '''
         # Set initial state
-        self.current_state = env.reset()
+        self.current_state = self.env.reset()
 
         # Main process loop
         i_step = 0
         while True:
             # Debug output
-            if i_step % CONSOLE_UPDATE_INTERVAL == 0:
+            if self.verbose and i_step % CONSOLE_UPDATE_INTERVAL == 0:
                 print(f"Update: Iteration={i_step}")
 
             self._process_messages()

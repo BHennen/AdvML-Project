@@ -80,7 +80,8 @@ class RewardPredictorModel(object):
         Returns a tuple of (reward, variance)
         '''
         predictions = []
-        obs, acts = np.array(list(zip(*trajectory)))
+        obs, acts = list(zip(*trajectory))
+        obs, acts = np.array(obs), np.array(acts)
         for model in self.models: # type: Model
             rewards = model.predict({"obs_input": obs, "act_input": acts})
             total_reward = np.sum(rewards)
