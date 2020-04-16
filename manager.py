@@ -25,7 +25,7 @@ class CarRacingManager(object):
             self.m_pipes.append(mpipe)
 
     def _check_msgs(self):
-        # check process 2 (video chooser) pipe
+        # check process input pipes
         msgs = []
         for pipe in self.m_pipes:
             while pipe.poll():
@@ -38,6 +38,9 @@ class CarRacingManager(object):
             if msg.sender == "proc2":
                 if msg.title == "close":
                     self.stop()
+                elif msg.title == "render":
+                    # Forward to proc 1 to render
+                    self.m_pipes[0].send(msg)
 
     def stop(self):
         # Signal all processes to stop.
@@ -52,7 +55,7 @@ class CarRacingManager(object):
 
     def run_full_program(self):
         # Initialize and start processes
-        self.processes.append(Process(target=run_agent_process, args=(self.traj_q, self.w_pipes[1], self.p_pipes[0])))
+        self.processes.append(Process(target=run_agent_process, args=(self.traj_q, self.w_pipes[0], self.p_pipes[0])))
         self.processes.append(Process(target=run_video_chooser, args=(self.traj_q, self.pref_q, self.p_pipes[1])))
         self.processes.append(Process(target=run_reward_predictor, args=(self.pref_q, self.w_pipes[1], self.p_pipes[2])))
         

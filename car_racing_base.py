@@ -354,6 +354,7 @@ class CarRacing(gym.Env, EzPickle):
         if self.viewer is None:
             from gym.envs.classic_control import rendering
             self.viewer = rendering.Viewer(WINDOW_W, WINDOW_H)
+            self.viewer.window.set_visible(visible=False)
             self.viewer.window.push_handlers(on_draw=self.on_draw)
             self.score_label = pyglet.text.Label('0000', font_size=36,
                 x=20, y=WINDOW_H*2.5/40.00, anchor_x='left', anchor_y='center',

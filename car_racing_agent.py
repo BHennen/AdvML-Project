@@ -26,6 +26,8 @@ from queue import Full
 
 import heapq
 
+import pyglet
+
 from car_racing_base import CarRacing
 from reward_predictor import RewardPredictorModel
 from communication import Message
@@ -144,7 +146,7 @@ class SegmentSelector():
                 pass
 
 class AgentProcess(object):
-    def __init__(self, traj_q, weight_pipe, mgr_pipe):
+    def __init__(self, traj_q, weight_pipe, mgr_pipe, render=False):
         self.traj_q = traj_q
         self.weight_pipe = weight_pipe
         self.mgr_pipe = mgr_pipe
@@ -153,9 +155,15 @@ class AgentProcess(object):
         self.seg_select = SegmentSelector(traj_q)        
         self.run_agent = True
         self.do_learn_policy = False
-        self.render_game = True
+        self.render_game = render
+        self.has_rendered = False
         self.env = CarRacing()
-        self.agent = Agent(self.env)
+        self.agent = Agent(self.env)        
+
+    def _window_closed(self):
+        print("closing car viewer")
+        self.render_game=False
+        self.env.viewer.window.set_visible(visible=False)
 
     def _process_messages(self):
         # Check weight pipe for new weights
@@ -165,27 +173,43 @@ class AgentProcess(object):
         if msg and msg.sender == "proc3" and msg.title == "weights":
             self.reward_predictor_model.set_weights(msg.content)
 
-        # Check mgr pipe for kill signal
+        # Check mgr pipe 
         while self.mgr_pipe.poll():
             msg = self.mgr_pipe.recv()
+            # kill signal
             if msg.sender == "mgr" and msg.title == "stop":
                 self.mgr_kill_sig = True
+            # Render
+            if msg.sender == "proc2" and msg.title == "render":
+                self.render_game = True
 
     def _stop(self):
         ''' Called when process asked to terminate by mgr
         '''
-        pass
+        if self.has_rendered:
+            self.env.viewer.window.pop_handlers()
+            self.env.viewer.close()
+        pyglet.app.exit()
+
+    def _render(self):
+        ''' Render (if desired)
+        '''
+        if self.render_game:
+            if not self.env.viewer.window.visible:
+                self.env.viewer.window.set_visible()
+            if not self.has_rendered:
+                #one time initialization
+                self.has_rendered = True
+                self.env.viewer.window.push_handlers(on_close = self._window_closed)
+            else:
+                self.env.render()
 
     def _agent_step(self):
         ''' One step of the agent
         '''
-        # Render (if desired)
-        if self.render_game:
-            self.env.render()
-
         # Get agent action
         action = self.agent.select_action(self.current_state)
-        trajectory = (current_state, action)
+        trajectory = (self.current_state, action)
         # Get state
         predicted_reward, variance = self.reward_predictor_model.predict([trajectory])
 
@@ -202,33 +226,40 @@ class AgentProcess(object):
 
         self.current_state = next_state
 
+    def _main_loop(self, dt=None):
+        # Debug output
+        if self.i_step % CONSOLE_UPDATE_INTERVAL == 0:
+            print(f"Update: Iteration={self.i_step}")
+
+        self._process_messages()
+        if self.mgr_kill_sig:
+            self._stop()
+            return False # Break out of loop to end process
+
+        self._agent_step()
+        self._render()
+
+        self.i_step += 1
+
+        return True
+
     def run(self):
-        ''' Main loop for process 3
+        ''' Main loop for process 1
         '''
         # Set initial state
-        self.current_state = env.reset()
+        self.current_state = self.env.reset()
 
         # Main process loop
-        i_step = 0
-        while True:
-            # Debug output
-            if i_step % CONSOLE_UPDATE_INTERVAL == 0:
-                print(f"Update: Iteration={i_step}")
+        self.i_step = 0
+        pyglet.clock.schedule(self._main_loop) #Run program
+        pyglet.app.run()
+        print("Quitting process 1")
+            
 
-            self._process_messages()
-            if self.mgr_kill_sig:
-                self._stop()
-                break # Break out of loop to end process
-
-            self._agent_step()
-
-            i_step += 1
-
-
-def run_agent_process(traj_q, weight_pipe, mgr_pipe):
-    agent_proc = AgentProcess(traj_q, weight_pipe, mgr_pipe)
+def run_agent_process(traj_q, weight_pipe, mgr_pipe, render=False):
+    agent_proc = AgentProcess(traj_q, weight_pipe, mgr_pipe, render)
     agent_proc.run()
 
 if __name__ == '__main__':
     a, b = Pipe() # dummy pipe connections
-    run_agent_process(Queue(), a, b)
+    run_agent_process(Queue(), a, b, render=True)
