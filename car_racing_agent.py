@@ -125,28 +125,24 @@ class SegmentSelector():
             heapq.heappush(self.trajectory_pqueue, ins_trajectory)
         elif self.total_segments > 1:
             heapq.heapreplace(self.trajectory_pqueue, ins_trajectory)
-            msg = self.get_next_segments()
+            pair = self.get_next_segments()
             try:
                 if self.verbose:
                     print(f"<CarRacingAgent.SegmentSelector> - Sending trajectory to process 3, variance={-variance}")
-                self.trajectory_queue.put_nowait(msg)
+                self.trajectory_queue.put_nowait(pair)
                 self.total_segments -= 2
             except Full as e:
                 if self.verbose:
                     print(f"<CarRacingAgent.SegmentSelector> - Queue is full! Cannot send additional trajectories")
-                s1, s2 = msg
+                s1, s2 = pair
                 heapq.heappush(self.trajectory_pqueue, s1)
                 heapq.heappush(self.trajectory_pqueue, s2)
-                pass
         # Reset vars
         self.current_trajectory = list()
 
     def get_next_segments(self):
         s1, s2 = heapq.heappop(self.trajectory_pqueue), heapq.heappop(self.trajectory_pqueue)
-        s1: Segment
-        s1.variance, s2.variance = -s1.variance, -s2.variance
-        msg = ((s1.variance, s1.trajectory), (s2.variance, s2.trajectory))
-        return msg
+        return (s1.trajectory, s2.trajectory)
 
     def update_segment(self, trajectory, variance):
         self.total_frames += 1
@@ -169,7 +165,7 @@ class AgentProcess(object):
         self.mgr_kill_sig = False
         self.reward_predictor_model = RewardPredictorModel()
         self.seg_select = SegmentSelector(traj_q, self.reward_predictor_model, verbose=verbose)
-        self.run_agent = True
+        self.reset = True
         self.do_learn_policy = False
         self.render_game = render
         self.has_rendered = False
@@ -177,6 +173,7 @@ class AgentProcess(object):
         self.agent = Agent(self.env)
         self.current_state = None
         self.verbose = verbose
+        self.game = 0
 
     def _window_closed(self):
         print("closing car viewer")
@@ -222,18 +219,35 @@ class AgentProcess(object):
             else:
                 self.env.render()
 
+    def _reset(self):
+        ''' Resets the training environment
+        '''        
+        # Set initial state
+        if self.game > 0:
+            print(f"Finished game {self.game}. Iterations: {self.i_step}. Final score: {self.tot_env_reward}. Predicted Score: {self.tot_pred_reward}")
+        self.game += 1
+        self.current_state = self.env.reset()
+        self.i_step = 0
+        self.tot_pred_reward = 0
+        self.tot_env_reward = 0
+
     def _agent_step(self):
         ''' One step of the agent
         '''
+        if self.reset:
+            self._reset()
+
         # Get agent action
         action = self.agent.select_action(self.current_state)
         trajectory = (self.current_state, action)
         # Get state
         predicted_reward, variance = self.reward_predictor_model.predict([trajectory])
+        self.tot_pred_reward += predicted_reward
 
         # Update state (perform action)
-        next_state, _, finished, _ = self.env.step(action)
-        self.run_agent = not finished
+        next_state, reward, finished, _ = self.env.step(action)
+        self.reset = finished
+        self.tot_env_reward += reward
 
         # Update segment
         self.seg_select.update_segment(trajectory, variance)
@@ -264,11 +278,8 @@ class AgentProcess(object):
     def run(self):
         ''' Main loop for process 1
         '''
-        # Set initial state
-        self.current_state = self.env.reset()
 
         # Main process loop
-        self.i_step = 0
         pyglet.clock.schedule(self._main_loop) #Run program
         pyglet.app.run()
         print("Quitting process 1")
