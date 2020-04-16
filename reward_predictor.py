@@ -79,8 +79,11 @@ class RewardPredictorModel(object):
         Returns a tuple of (reward, variance)
         '''
         predictions = []
+        obs, acts = list(zip(*trajectory))
+        obs, acts = np.array(obs), np.array(acts)
         for model in self.models:
-            rewards = model.predict(np.array(trajectory))
+            model: Model
+            rewards = model.predict({"obs_input": obs, "act_input": acts})
             total_reward = np.sum(rewards)
             predictions.append(total_reward)
         avg_prediction = np.mean(predictions)
@@ -117,15 +120,13 @@ class RewardPredictorModel(object):
     def _build_cnn(self, width=96, height=96, depth=3, print_summary=False):
         # Build convolutional model for images input using similar architecture as Christiano 2017
         # TODO: use L2 regularization with the adapative scheme in Section 2.2.3
-        obs_input = Input(shape = (height, width, depth), name="obs_input")
+        obs_input = Input(shape=(height, width, depth), name="obs_input")
         fks = [(8, (7,7), 3), 
                (16, (5,5), 2),
                (32, (3,3), 2),
                (64, (3,3), 1)]
+        x = obs_input
         for index, (filters, kernel, strides) in enumerate(fks):
-            if index == 0:
-                x = obs_input
-            
             x = Conv2D(filters = filters, kernel_size = kernel, strides = strides, padding='same', name=f"cnn_conv{index+1}")(x)
             x = Activation("relu")(x)
             x = BatchNormalization()(x)

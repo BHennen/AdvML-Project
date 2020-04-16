@@ -6,6 +6,7 @@ from time import sleep
 from communication import Message
 from video_chooser import run_video_chooser
 from reward_predictor import run_reward_predictor
+from car_racing_agent import run_agent_process
 
 
 class CarRacingManager(object):
@@ -50,7 +51,7 @@ class CarRacingManager(object):
 
     def run_full_program(self):
         # Initialize and start processes
-        # TODO: agent process
+        self.processes.append(Process(target=run_agent_process, args=(self.traj_q,)))
         self.processes.append(Process(target=run_video_chooser, args=(self.traj_q, self.pref_q, self.p_pipes[1])))
         self.processes.append(Process(target=run_reward_predictor, args=(self.pref_q, self.w_pipes[1], self.p_pipes[2])))
         
@@ -63,6 +64,8 @@ class CarRacingManager(object):
             self._check_msgs()
             sleep(1)
         print("Manager quitting.")
+        for p in self.processes:
+            p.join()
 
 if __name__ == "__main__":
     mgr = CarRacingManager()
