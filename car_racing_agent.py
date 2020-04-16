@@ -15,22 +15,22 @@
 #    of length k, use each reward predictor in our ensemble (from process 3) to predict which segment will be preferred
 #    from each pair, and then select those trajectories for which the predictions have the highest variance across ensemble members.
 # 3) Send chosen pair of trajectory segment to process 2
+
 from keras import Model
 from keras.layers import Dense, Conv2D, MaxPooling2D, Flatten, Input, Dropout
 from keras.regularizers import l2
 from keras.optimizers import Adam
 import numpy as np
 from multiprocessing import Queue
-import pickle
-import os
+from queue import Full
 
-from queue import PriorityQueue
+import heapq
 
 from car_racing_base import CarRacing
 from reward_predictor import RewardPredictorModel
-from manager import Message
 
 PROCESS_ID = 'proc1'
+CONSOLE_UPDATE_INTERVAL = 10
 
 class Agent():
 
@@ -43,7 +43,7 @@ class Agent():
     '''
     Intializes Keras model as policy
     '''
-    def _build_model(self, do_dropout=True, p_dropout=0.5, l2_reg_val=0.001):
+    def _build_model(self, do_dropout=True, p_dropout=0.5, l2_reg_val=0.001, print_summary=False):
         state_shape = self.env.observation_space.shape
         input_tensor = Input(shape=state_shape, name='input')
         x = input_tensor
@@ -62,7 +62,8 @@ class Agent():
         output3 = Dense(2, name='out3', activation='sigmoid')(x)
         model = Model(inputs=[input_tensor], outputs=[output1, output2, output3], name='agent_policy')
         model.compile(loss="mean_squared_error", optimizer=Adam(lr=self.learning_rate, beta_1=0.99, epsilon=10**-5))
-        print(model.summary())
+        if print_summary:
+            model.summary()
         return model
 
     def select_action(self, observation):
@@ -80,46 +81,66 @@ class Segment():
 
 
 class SegmentSelector():
-    SEGMENT_FILE = 'master.segs'
     SEGMENT_LENGTH = 100
     MIN_AVG_VARIANCE = 0.5
-    RANDOM_POLICY_SEGMENT_COUNT = 50
+    PQUEUE_MAX_SIZE = 50
+    MAX_TQUEUE_SIZE = 50
 
     def __init__(self, trajectory_queue):
         self.trajectory_queue = trajectory_queue
         self.current_trajectory = list()
         self.current_variance = 0
         self.avg_variance = 0
-        self.trajectory_pqueue = self.load_pqueue()
+        self.trajectory_pqueue = list()
+        heapq.heapify(self.trajectory_pqueue)
         self.total_frames = 0
         self.total_segments = 0
+        self.initial_values_generated = False
 
     def load_pqueue(self):
-        if not os.path.exists(self.SEGMENT_FILE):
-            return PriorityQueue()
-        else:
-            with open(self.SEGMENT_FILE, 'rb') as f_in:
-                return pickle.load(f_in)
+        ret = list()
+        heapq.heapify(ret)
+        return ret
 
     def end_segment(self):
-        self.trajectory_pqueue.put((self.avg_variance, Segment(self.current_trajectory, self.avg_variance)))
+        heapq.heappush(self.trajectory_pqueue, (-self.avg_variance, Segment(self.current_trajectory, self.avg_variance)))
         self.current_trajectory = list()
         self.avg_variance = self.current_variance / len(self.current_trajectory)
         self.current_variance = 0
         self.total_segments += 1
 
-        if self.total_segments >= self.RANDOM_POLICY_SEGMENT_COUNT:
-            s1, s2 = self.trajectory_pqueue.get(), self.trajectory_pqueue.get()
-            self.trajectory_queue.push(s1)
+        if self.total_segments >= self.PQUEUE_MAX_SIZE:
+            self.initial_values_generated = True
+            msg = self.get_segments()
+            try:
+                self.trajectory_queue.put_nowait(msg)
+            except Full as e:
+                pass
+
+    def get_segments(self):
+        s1, s2 = heapq.heappop(self.trajectory_pqueue), heapq.heappop(self.trajectory_pqueue)
+        var, traj = s1
+        var = -var
+        s1 = (var, traj)
+        var, traj = s2
+        var = -var
+        s2 = (var, traj)
+        msg = (s1, s2)
+        return msg
 
     def update_segment(self, trajectory, variance):
-        obs, action = trajectory
         self.total_frames += 1
         self.current_trajectory.append(trajectory)
         self.current_variance += variance
 
         if len(trajectory) >= self.SEGMENT_LENGTH:
             self.end_segment()
+
+        if self.initial_values_generated:
+            try:
+                self.trajectory_queue.put_nowait(self.get_segments())
+            except Full as e:
+                pass
 
 
 def run_agent_process(traj_q):
@@ -142,6 +163,10 @@ def run_agent_process(traj_q):
 
     i_step = 0
     while run_agent:
+        # Debug output
+        if i_step % CONSOLE_UPDATE_INTERVAL == 0:
+            print(f"Update: Iteration={i_step}")
+
         # Render (if desired)
         if render_game:
             env.render()

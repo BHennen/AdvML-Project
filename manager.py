@@ -8,6 +8,7 @@ from video_chooser import run_video_chooser
 from reward_predictor import run_reward_predictor
 from car_racing_agent import run_agent_process
 
+TRAJECTORY_QUEUE_LEN = 5
 
 class CarRacingManager(object):
     def __init__(self):
