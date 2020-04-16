@@ -52,7 +52,7 @@ class RewardPredictorModel(object):
         traj_1, traj_2, pref = triple
         obs_1, actions_1 = np.array(list(zip(*traj_1)))
         obs_2, actions_2 = np.array(list(zip(*traj_2)))
-        for model in self.models:
+        for model in self.models: # type: Model
             # Open a GradientTape to record the operations run
             # during the forward pass, which enables autodifferentiation.
             with tf.GradientTape() as tape:
@@ -61,8 +61,9 @@ class RewardPredictorModel(object):
                 # Predictions for this trajectory pair
                 t1_r_hat = model(inputs={"obs_input":obs_1, "act_input":actions_1}, training=True)
                 t2_r_hat = model(inputs={"obs_input":obs_2, "act_input":actions_2}, training=True)
-                # Compute the loss value for this minibatch.
-                loss_value = self._loss_fn(t1_r_hat, t2_r_hat, pref)
+                # Compute the loss value for this triple.
+                main_loss = self._loss_fn(t1_r_hat, t2_r_hat, pref)
+                loss_value = tf.add_n([main_loss] + model.losses)
 
             # Use the gradient tape to automatically retrieve
             # the gradients of the trainable variables with respect to the loss.
@@ -79,10 +80,8 @@ class RewardPredictorModel(object):
         Returns a tuple of (reward, variance)
         '''
         predictions = []
-        obs, acts = list(zip(*trajectory))
-        obs, acts = np.array(obs), np.array(acts)
-        for model in self.models:
-            model: Model
+        obs, acts = np.array(list(zip(*trajectory)))
+        for model in self.models: # type: Model
             rewards = model.predict({"obs_input": obs, "act_input": acts})
             total_reward = np.sum(rewards)
             predictions.append(total_reward)
@@ -104,17 +103,34 @@ class RewardPredictorModel(object):
 
     # Loss function as described in paper by Christiano, Paul et. al. 2017
     def _loss_fn(self, t1_r_hat, t2_r_hat, pref):
-        t1_rsum = np.sum(t1_r_hat)
-        t2_rsum = np.sum(t2_r_hat)
-        max_reward = np.max([t1_rsum, t2_rsum])
+        # If they prefer them equally, -0.5 is the value of the equation since
+        # P(1) + P(2) == 1:
+        # - 0.5*P(1) + 0.5*P(2) == -0.5 * (P(1) + P(2)) == -0.5 * 1 == -0.5
+        if pref[0] == 0.5:
+            return tf.constant(-0.5)
+        # Compute terms for softmax
+        t1_rsum = tf.reduce_sum(t1_r_hat)
+        t2_rsum = tf.reduce_sum(t2_r_hat)
+        max_reward = tf.maximum(t1_rsum, t2_rsum)
         
-        t1_exp = np.exp(t1_rsum - max_reward)
-        t2_exp = np.exp(t2_rsum - max_reward)
+        # Subtract max_reward to prevent overflow
+        t1_exp = tf.exp(t1_rsum - max_reward)
+        t2_exp = tf.exp(t2_rsum - max_reward)
 
         p_hat_1_gt_2 = t1_exp / (t1_exp + t2_exp)
         p_hat_2_gt_1 = t2_exp / (t2_exp + t1_exp)
 
-        loss = -1 * (pref[0] * p_hat_1_gt_2 + pref[1] * p_hat_2_gt_1)
+        # Original equation is loss = -1 * (pref[0] * p_hat_1_gt_2_adj + pref[1] * p_hat_2_gt_1_adj)
+        # Since pref[i] == 1 or 0, we can ignore some parts of equation
+        if pref[0] == 1:
+            # Adjust probabilities that they prefer one over the other
+            # by assuming they choose correctly 90% of the time, and
+            # incorrectly 10% of the time
+            pref_traj = p_hat_1_gt_2 * 0.9 + p_hat_2_gt_1 * 0.1
+        else:
+            pref_traj = p_hat_2_gt_1 * 0.9 + p_hat_1_gt_2 * 0.1
+
+        loss = -1 * pref_traj
         return loss
 
     def _build_cnn(self, width=96, height=96, depth=3, print_summary=False):
