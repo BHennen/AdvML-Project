@@ -92,8 +92,8 @@ class Segment():
 
 
 class SegmentSelector():
-    SEGMENT_LENGTH = 100
-    PQUEUE_MAX_SIZE = 50
+    SEGMENT_LENGTH = 5
+    PQUEUE_MAX_SIZE = 5
 
     def __init__(self, trajectory_queue, reward_predictor_model, verbose=False):
         self.trajectory_queue = trajectory_queue
@@ -174,6 +174,7 @@ class AgentProcess(object):
         self.current_state = None
         self.verbose = verbose
         self.game = 0
+        self.i_step = 0
 
     def _window_closed(self):
         print("closing car viewer")

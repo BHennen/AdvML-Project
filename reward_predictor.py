@@ -50,8 +50,10 @@ class RewardPredictorModel(object):
         '''Fits a triple of (trajectory_1, trajectory_2, preference) to the model, updating the model weights
         '''
         traj_1, traj_2, pref = triple
-        obs_1, actions_1 = np.array(list(zip(*traj_1)))
-        obs_2, actions_2 = np.array(list(zip(*traj_2)))
+        obs_1, actions_1 = list(zip(*traj_1))
+        obs_1, actions_1 = np.array(obs_1, dtype=np.float32), np.array(actions_1)
+        obs_2, actions_2 = list(zip(*traj_2))
+        obs_2, actions_2 = np.array(obs_2, dtype=np.float32), np.array(actions_2)
         for model in self.models: # type: Model
             # Open a GradientTape to record the operations run
             # during the forward pass, which enables autodifferentiation.
@@ -67,11 +69,10 @@ class RewardPredictorModel(object):
 
             # Use the gradient tape to automatically retrieve
             # the gradients of the trainable variables with respect to the loss.
-            grads = tape.gradient(loss_value, model.trainable_weights)
-
+            grads = tape.gradient(loss_value, model.trainable_variables)
             # Run one step of gradient descent by updating
             # the value of the variables to minimize the loss.
-            self.optimizer.apply_gradients(zip(grads, model.trainable_weights))
+            self.optimizer.apply_gradients(zip(grads, model.trainable_variables))
 
     def predict(self, trajectory):
         '''
@@ -104,11 +105,6 @@ class RewardPredictorModel(object):
 
     # Loss function as described in paper by Christiano, Paul et. al. 2017
     def _loss_fn(self, t1_r_hat, t2_r_hat, pref):
-        # If they prefer them equally, -0.5 is the value of the equation since
-        # P(1) + P(2) == 1:
-        # - 0.5*P(1) + 0.5*P(2) == -0.5 * (P(1) + P(2)) == -0.5 * 1 == -0.5
-        if pref[0] == 0.5:
-            return tf.constant(-0.5)
         # Compute terms for softmax
         t1_rsum = tf.reduce_sum(t1_r_hat)
         t2_rsum = tf.reduce_sum(t2_r_hat)
@@ -121,17 +117,14 @@ class RewardPredictorModel(object):
         p_hat_1_gt_2 = t1_exp / (t1_exp + t2_exp)
         p_hat_2_gt_1 = t2_exp / (t2_exp + t1_exp)
 
-        # Original equation is loss = -1 * (pref[0] * p_hat_1_gt_2_adj + pref[1] * p_hat_2_gt_1_adj)
-        # Since pref[i] == 1 or 0, we can ignore some parts of equation
-        if pref[0] == 1:
-            # Adjust probabilities that they prefer one over the other
-            # by assuming they choose correctly 90% of the time, and
-            # incorrectly 10% of the time
-            pref_traj = p_hat_1_gt_2 * 0.9 + p_hat_2_gt_1 * 0.1
-        else:
-            pref_traj = p_hat_2_gt_1 * 0.9 + p_hat_1_gt_2 * 0.1
+        # Adjust probabilities that they prefer one over the other
+        # by assuming they choose correctly 90% of the time, and
+        # incorrectly 10% of the time
+        p_hat_1_gt_2_adj = p_hat_1_gt_2 * 0.9 + p_hat_2_gt_1 * 0.1
+        p_hat_2_gt_1_adj = p_hat_2_gt_1 * 0.9 + p_hat_1_gt_2 * 0.1
 
-        loss = -1 * pref_traj
+        loss = -1 * (pref[0] * p_hat_1_gt_2_adj + pref[1] * p_hat_2_gt_1_adj)
+
         return loss
 
     def _build_cnn(self, width=96, height=96, depth=3, print_summary=False):
