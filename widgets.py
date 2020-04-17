@@ -245,12 +245,12 @@ class Button(CenteredWidget, pyglet.event.EventDispatcher):
             glColor3f(1, 0, 0)
         draw_rect(self.x, self.y, self.width, self.height)
         glColor3f(1, 1, 1)
-        self.draw_label()
+        self._text.draw()
 
-    def draw_label(self):
+    def _resize(self):
+        super()._resize() 
         self._text.x = int(self.x + self.width / 2)
         self._text.y = int(self.y + self.height / 2)
-        self._text.draw()
 
     def set_text(self, text):
         self._text.text = text

@@ -535,7 +535,7 @@ if __name__=="__main__":
 
     # Create second viewer
     win2 = StateViewer(STATE_W, STATE_H, env.viewer)
-
+    env.viewer.window.set_visible()
     restart = True
     done = False
     steps = 0

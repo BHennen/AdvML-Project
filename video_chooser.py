@@ -36,7 +36,7 @@ class VideoChooser():
     '''
 
     '''
-    def __init__(self, traj_q, pref_q, mgr_conn, FPS=50):
+    def __init__(self, traj_q, pref_q, mgr_conn, FPS=50, profile=None):
         '''
         traj_q and pref_q are Queue objects from the multiprocessing package
         '''
@@ -53,6 +53,7 @@ class VideoChooser():
         self.button_text = ["Left is better", "Can't tell", "Tie", "Right is better", "Render"]
         self._init_choice_buttons()
         self._init_pixels()
+        self.profile = profile
 
     def _on_close(self):
         # Window requested to be closed
@@ -87,6 +88,11 @@ class VideoChooser():
         # close pipe
         self.mgr_conn.close()
         pyglet.app.exit()
+        if self.profile:
+            self.profile.disable()
+            proc_name = ''.join(current_process().name.split())
+            filename = os.path.join("profile", f"{proc_name}.profile")
+            self.profile.dump_stats(filename)
         print(f"Quitting {current_process().name} process")
         os._exit(0)
 
@@ -178,8 +184,14 @@ class VideoChooser():
         pyglet.clock.schedule_interval(self.window.update, 1.0/self.FPS) #Update graphics
         pyglet.app.run()
 
-def run_video_chooser(traj_q, pref_q, mgr_conn):
-    chooser = VideoChooser(traj_q, pref_q, mgr_conn)
+def run_video_chooser(traj_q, pref_q, mgr_conn, profile=False):
+    prof = None
+    if profile:
+        import cProfile
+        prof = cProfile.Profile()
+        prof.enable()
+    
+    chooser = VideoChooser(traj_q, pref_q, mgr_conn, profile=prof)
     chooser._run()
 
 def test():

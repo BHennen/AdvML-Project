@@ -2,6 +2,7 @@
 
 from multiprocessing import Process, Queue, Pipe
 from time import sleep
+import argparse
 
 from communication import Message
 from video_chooser import run_video_chooser
@@ -53,11 +54,27 @@ class CarRacingManager(object):
         print("Done waiting for all processes.")
         self.execute = False
 
-    def run_full_program(self):
+    def run_full_program(self, profile=False):
+        if profile:
+            from os import mkdir
+            try:
+                mkdir("profile")
+            except FileExistsError:
+                pass
+
         # Initialize and start processes
-        self.processes.append(Process(target=run_agent_process, args=(self.traj_q, self.weight_q, self.p_pipes[0]), name = "Agent"))
-        self.processes.append(Process(target=run_video_chooser, args=(self.traj_q, self.pref_q, self.p_pipes[1]), name = "Video Chooser"))
-        self.processes.append(Process(target=run_reward_predictor, args=(self.pref_q, self.weight_q, self.p_pipes[2]), name = "Reward Predictor"))
+        self.processes.append(Process(target=run_agent_process,
+                                      args=(self.traj_q, self.weight_q, self.p_pipes[0]),
+                                      kwargs={"profile": profile},
+                                      name = "Agent"))
+        self.processes.append(Process(target=run_video_chooser,
+                                      args=(self.traj_q, self.pref_q, self.p_pipes[1]),
+                                      kwargs={"profile": profile},
+                                      name = "Video Chooser"))
+        self.processes.append(Process(target=run_reward_predictor,
+                                      args=(self.pref_q, self.weight_q, self.p_pipes[2]),
+                                      kwargs={"profile": profile},
+                                      name = "Reward Predictor"))
         
         for p in self.processes:
             p.start()
@@ -70,5 +87,8 @@ class CarRacingManager(object):
         print("Manager quitting.")
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-p", "--profile", help="Profile the individual processes.", action="store_true")
+    args = parser.parse_args()
     mgr = CarRacingManager()
-    mgr.run_full_program()
+    mgr.run_full_program(profile = args.profile)

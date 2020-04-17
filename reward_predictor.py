@@ -190,13 +190,14 @@ class RewardPredictorModel(object):
 class RewardPredictor(object):
     '''
     '''
-    def __init__(self, pref_q, weight_q, mgr_conn, buffer_len):
+    def __init__(self, pref_q, weight_q, mgr_conn, buffer_len, profile=None):
         self._pref_q = pref_q
         self._weight_q = weight_q
         self._mgr_conn = mgr_conn
         self._q = deque(maxlen = buffer_len)
         self.model = RewardPredictorModel()
         self._stop_sig = False
+        self.profile = profile
         
     def _get_comparisons(self):
         # Gets all available comparisons and stores them in queue
@@ -237,7 +238,12 @@ class RewardPredictor(object):
     def _stop(self):
         # Stop process execution
         self._stop_sig = True
-        self._weight_q.close()                
+        self._weight_q.close()
+        if self.profile:
+            self.profile.disable()
+            proc_name = ''.join(current_process().name.split())
+            filename = os.path.join("profile", f"{proc_name}.profile")
+            self.profile.dump_stats(filename)
         print(f"Quitting {current_process().name} process")
         os._exit(0)
 
@@ -249,8 +255,14 @@ class RewardPredictor(object):
             self._learn()
             self._output_model_weights()
 
-def run_reward_predictor(pref_q, weight_q, mgr_conn):
-    reward_predictor = RewardPredictor(pref_q=pref_q, weight_q=weight_q, mgr_conn=mgr_conn, buffer_len=BUFFER_LEN)
+def run_reward_predictor(pref_q, weight_q, mgr_conn, profile=False):
+    prof = None
+    if profile:
+        import cProfile
+        prof = cProfile.Profile()
+        prof.enable()
+    
+    reward_predictor = RewardPredictor(pref_q=pref_q, weight_q=weight_q, mgr_conn=mgr_conn, buffer_len=BUFFER_LEN, profile = prof)
     reward_predictor._run()
 
 if __name__ == "__main__":

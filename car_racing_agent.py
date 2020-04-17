@@ -159,7 +159,7 @@ class SegmentSelector():
                 pass
 
 class AgentProcess(object):
-    def __init__(self, traj_q, weight_q, mgr_pipe, verbose=False, render=False):
+    def __init__(self, traj_q, weight_q, mgr_pipe, verbose=False, render=False, profile=None):
         self.traj_q = traj_q
         self.weight_q = weight_q
         self.mgr_pipe = mgr_pipe
@@ -176,11 +176,11 @@ class AgentProcess(object):
         self.verbose = verbose
         self.game = 0
         self.i_step = 0
+        self.profile = profile
 
     def _window_closed(self):
         print("closing car viewer")
-        self.render_game=False
-        self.env.viewer.window.set_visible(visible=False)
+        self.render_game=False        
 
     def _process_messages(self):
         # Check mgr pipe 
@@ -188,10 +188,10 @@ class AgentProcess(object):
             msg = self.mgr_pipe.recv()
             # kill signal
             if msg.sender == "mgr" and msg.title == "stop":
-                self.mgr_kill_sig = True
+                self._stop()
             # Render
             if msg.sender == "proc2" and msg.title == "render":
-                self.render_game = True
+                self.render_game = not self.render_game
     
     def _update_reward_weights(self):
         # Check weight queue for new weights
@@ -210,6 +210,11 @@ class AgentProcess(object):
         self.weight_q.close()
         self.mgr_pipe.close()
         pyglet.app.exit()        
+        if self.profile:
+            self.profile.disable()
+            proc_name = ''.join(current_process().name.split())
+            filename = os.path.join("profile", f"{proc_name}.profile")
+            self.profile.dump_stats(filename)
         print(f"Quitting {current_process().name} process")
         os._exit(0)
 
@@ -225,13 +230,16 @@ class AgentProcess(object):
                 self.env.viewer.window.push_handlers(on_close = self._window_closed)
             else:
                 self.env.render()
+        elif self.env.viewer.window.visible:
+            self.env.viewer.window.set_visible(visible=False)
 
     def _reset(self):
         ''' Resets the training environment
         '''        
         # Set initial state
         if self.game > 0:
-            print(f"Finished game {self.game}. Iterations: {self.i_step}. Final score: {self.tot_env_reward}. Predicted Score: {self.tot_pred_reward}")
+            print(f"Finished game {self.game}. Iterations: {self.i_step}. " + \
+                  f"Final score: {self.tot_env_reward:.2f}. Predicted Score: {self.tot_pred_reward:.2f}")
         self.game += 1
         self.current_state = self.env.reset()
         self.i_step = 0
@@ -271,30 +279,29 @@ class AgentProcess(object):
             print(f"Update: Iteration={self.i_step}")
 
         self._process_messages()
-        if self.mgr_kill_sig:
-            self._stop()
-            return False # Break out of loop to end process
-
         self._update_reward_weights()
         self._agent_step()
         self._render()
 
         self.i_step += 1
 
-        return True
-
     def _run(self):
         ''' Main loop for process 1
-        '''
-
-        # Main process loop
+        '''        
         pyglet.clock.schedule(self._main_loop) #Run program
         pyglet.app.run()
             
 
-def run_agent_process(traj_q, weight_q, mgr_pipe, render=False):
-    agent_proc = AgentProcess(traj_q, weight_q, mgr_pipe, render=render)
+def run_agent_process(traj_q, weight_q, mgr_pipe, render=False, profile=False):
+    prof = None
+    if profile:
+        import cProfile
+        prof = cProfile.Profile()
+        prof.enable()
+    
+    agent_proc = AgentProcess(traj_q, weight_q, mgr_pipe, render=render, profile = prof)
     agent_proc._run()
+    
 
 if __name__ == '__main__':
     a, b = Pipe() # dummy pipe connections
