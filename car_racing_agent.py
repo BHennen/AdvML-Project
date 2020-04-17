@@ -27,6 +27,7 @@ from queue import Full, Empty
 
 import heapq
 import os
+import itertools
 
 import pyglet
 
@@ -37,11 +38,14 @@ PROCESS_ID = 'proc1'
 CONSOLE_UPDATE_INTERVAL = 10
 
 class Agent():
+    # Discrete actions
+    STEER_ACTIONS = [-1, 0, 1]
+    GAS_ACTIONS = [0, 1]
+    BRAKE_ACTIONS = [0, 0.8]
 
     def __init__(self, env, lr=0.001):
         self.env = env
         self.learning_rate = lr
-
         self.policy = self._build_model()
 
     '''
@@ -82,29 +86,74 @@ class Agent():
         action_idxs = np.array(action_idxs).flatten()
         return action_idxs
 
-class Segment():
-    def __init__(self, trajectory, variance):
-        self.trajectory = trajectory
-        self.variance = variance
+    def select_random_action(self, observation):
+        steer = np.random.choice(self.STEER_ACTIONS)
+        gas = np.random.choice(self.GAS_ACTIONS)
+        brake = np.random.choice(self.BRAKE_ACTIONS)
+        return [steer, gas, brake]
 
-    def __lt__(self, other):
-        other: Segment
-        return self.variance < other.variance
+
+class SegmentQueue():
+    def __init__(self, maxlen, verbose=False):
+        self.verbose = verbose
+        self.size = 0
+        self.maxlen = maxlen
+        self.counter = itertools.count()
+        self.entry_finder = {} # Dictionary stores the actual trajectory
+        self.pq_high = [] # Heap that produces segments with highest variance by heappop
+        self.pq_low = [] # Heap that produces segments with lowest variance by heappop
+
+    def is_full(self):
+        return self.size >= self.maxlen
+
+    def add_segment(self, trajectory, variance):
+        ''' Adds a segment to the queue. Removes the lowest variance trajectory if full.
+        '''
+        traj_no = next(self.counter)
+        if self.verbose: print(f"Adding segment {traj_no} to queue- variance={variance:.4f}")
+        self.entry_finder[traj_no] = (trajectory, variance)
+
+        heapq.heappush(self.pq_high, [-variance, traj_no])
+        heapq.heappush(self.pq_low, [variance, traj_no])
+
+        self.size += 1
+        if self.size > self.maxlen:
+            self.pop_lowest()
+
+    def pop_highest(self):
+        ''' Returns the segment with the highest variance
+        '''
+        while self.pq_high:
+            variance, traj_no = heapq.heappop(self.pq_high)
+            if traj_no in self.entry_finder:
+                if self.verbose: print(f"Popping segment {traj_no} from queue- variance={np.abs(variance):.4f}")
+                self.size -= 1
+                return self.entry_finder.pop(traj_no)
+        raise KeyError('pop from an empty segment queue')
+
+    def pop_lowest(self):
+        ''' Returns the segment with the lowest variance
+        '''
+        while self.pq_low:
+            variance, traj_no = heapq.heappop(self.pq_low)
+            if traj_no in self.entry_finder:
+                if self.verbose: print(f"Popping segment {traj_no} from queue- variance={np.abs(variance):.4f}")
+                self.size -= 1
+                return self.entry_finder.pop(traj_no)
+        raise KeyError('pop from an empty segment queue')
 
 
 class SegmentSelector():
     SEGMENT_LENGTH = 5
     PQUEUE_MAX_SIZE = 5
+    SAMPLE_SEGMENTS = 5 # Sample N new segments before sending a pair to the human
 
     def __init__(self, trajectory_queue, reward_predictor_model, verbose=False):
         self.trajectory_queue = trajectory_queue
         self.reward_predictor_model = reward_predictor_model
         self.current_trajectory = list()
-        self.trajectory_pqueue = list()
-        heapq.heapify(self.trajectory_pqueue)
-        self.total_frames = 0
-        self.total_segments = 0
-        self.initial_values_generated = False
+        self.trajectory_pqueue = SegmentQueue(maxlen=self.PQUEUE_MAX_SIZE, verbose=verbose)
+        self.sampled_segments = 0
         self.verbose = verbose
 
     def load_pqueue(self):
@@ -115,48 +164,39 @@ class SegmentSelector():
     def end_segment(self):
         # Determine variance of trajectory
         reward, variance = self.reward_predictor_model.predict(self.current_trajectory)
-        ins_trajectory = Segment(self.current_trajectory, -variance)
 
         if self.verbose:
             print(f"<CarRacingAgent.SegmentSelector> - Recording trajectory, reward={reward},variance={variance}")
 
-        # Put trajectory into heap
-        if self.total_segments < self.PQUEUE_MAX_SIZE:
-            self.total_segments += 1
-            heapq.heappush(self.trajectory_pqueue, ins_trajectory)
-        elif self.total_segments > 1:
-            heapq.heapreplace(self.trajectory_pqueue, ins_trajectory)
-            pair = self.get_next_segments()
+        # Put trajectory into segment queue, automatically removes the lowest variance trajectory
+        self.trajectory_pqueue.add_segment(self.current_trajectory, variance)
+        self.sampled_segments += 1
+
+        # If the queue is full and we have processed enough segments, send pair to human
+        if self.trajectory_pqueue.is_full() and self.sampled_segments >= self.SAMPLE_SEGMENTS:
+            # Get two highest variance segments
+            (s1, var1), (s2, var2) = self.trajectory_pqueue.pop_highest(), self.trajectory_pqueue.pop_highest()
+            # send them to human
             try:
                 if self.verbose:
-                    print(f"<CarRacingAgent.SegmentSelector> - Sending trajectory to process 3, variance={-variance}")
-                self.trajectory_queue.put_nowait(pair)
-                self.total_segments -= 2
+                    print(f"<CarRacingAgent.SegmentSelector> - Sending trajectory pair to process 2, variances={var1:.4f}, {var2:.4f}")
+                self.trajectory_queue.put_nowait((s1,s2))
             except Full as e:
                 if self.verbose:
                     print(f"<CarRacingAgent.SegmentSelector> - Queue is full! Cannot send additional trajectories")
-                s1, s2 = pair
-                heapq.heappush(self.trajectory_pqueue, s1)
-                heapq.heappush(self.trajectory_pqueue, s2)
+                self.trajectory_pqueue.add_segment(s1, var1)
+                self.trajectory_pqueue.add_segment(s2, var2)
+            self.sampled_segments = 0
+
         # Reset vars
         self.current_trajectory = list()
 
-    def get_next_segments(self):
-        s1, s2 = heapq.heappop(self.trajectory_pqueue), heapq.heappop(self.trajectory_pqueue)
-        return (s1.trajectory, s2.trajectory)
-
     def update_segment(self, trajectory, variance):
-        self.total_frames += 1
         self.current_trajectory.append(trajectory)
 
         if len(self.current_trajectory) >= self.SEGMENT_LENGTH:
             self.end_segment()
 
-        if self.initial_values_generated:
-            try:
-                self.trajectory_queue.put_nowait(self.get_next_segments())
-            except Full as e:
-                pass
 
 class AgentProcess(object):
     def __init__(self, traj_q, weight_q, mgr_pipe, verbose=False, render=False, profile=None):
@@ -176,6 +216,8 @@ class AgentProcess(object):
         self.verbose = verbose
         self.game = 0
         self.i_step = 0
+        self.tot_pred_reward = 0
+        self.tot_env_reward = 0
         self.profile = profile
 
     def _window_closed(self):

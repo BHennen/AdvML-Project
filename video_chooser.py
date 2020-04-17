@@ -54,6 +54,7 @@ class VideoChooser():
         self._init_choice_buttons()
         self._init_pixels()
         self.profile = profile
+        self.countdown = 1/self.FPS
 
     def _on_close(self):
         # Window requested to be closed
@@ -113,6 +114,22 @@ class VideoChooser():
                              FPS = self.FPS, left=0, right=0.5, top=0, bottom=0)
         self.r_pixels = PixelFrame(parent = self.pixel_frame, pixel_width = self.img_w, pixel_height = self.img_h,
                              FPS = self.FPS, left=0.5, right=0, top=0, bottom=0)
+        # override update
+        self.l_pixels._update = lambda dt: None
+        self.r_pixels._update = lambda dt: None
+        self.pixel_frame._update = self._pixel_update
+
+    def _pixel_update(self, dt):
+        if self.l_pixels.num_imgs == 0:
+            #Display wait message if no images
+            self.l_pixels.img_index = 0
+            self.r_pixels.img_index = 0
+            return
+        self.countdown -= dt
+        if self.countdown < 0:
+            self.countdown = 1/self.FPS
+            self.l_pixels.img_index = ((self.l_pixels.img_index+1) % self.l_pixels.num_imgs) + 1 # + 1 to skip over wait image
+            self.r_pixels.img_index = self.l_pixels.img_index
 
     def _enable_buttons(self, dt):
         self.button_enabled = True
@@ -184,14 +201,14 @@ class VideoChooser():
         pyglet.clock.schedule_interval(self.window.update, 1.0/self.FPS) #Update graphics
         pyglet.app.run()
 
-def run_video_chooser(traj_q, pref_q, mgr_conn, profile=False):
+def run_video_chooser(traj_q, pref_q, mgr_conn, FPS = 50, profile=False):
     prof = None
     if profile:
         import cProfile
         prof = cProfile.Profile()
         prof.enable()
     
-    chooser = VideoChooser(traj_q, pref_q, mgr_conn, profile=prof)
+    chooser = VideoChooser(traj_q, pref_q, mgr_conn, FPS = FPS, profile=prof)
     chooser._run()
 
 def test():

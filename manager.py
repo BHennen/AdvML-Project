@@ -54,7 +54,7 @@ class CarRacingManager(object):
         print("Done waiting for all processes.")
         self.execute = False
 
-    def run_full_program(self, profile=False):
+    def run_full_program(self, profile=False, video_FPS=50):
         if profile:
             from os import mkdir
             try:
@@ -69,7 +69,7 @@ class CarRacingManager(object):
                                       name = "Agent"))
         self.processes.append(Process(target=run_video_chooser,
                                       args=(self.traj_q, self.pref_q, self.p_pipes[1]),
-                                      kwargs={"profile": profile},
+                                      kwargs={"profile": profile, "FPS": video_FPS},
                                       name = "Video Chooser"))
         self.processes.append(Process(target=run_reward_predictor,
                                       args=(self.pref_q, self.weight_q, self.p_pipes[2]),
