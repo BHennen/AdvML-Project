@@ -22,10 +22,11 @@ from keras.regularizers import l2
 from keras.optimizers import Adam
 from keras.initializers import RandomNormal
 import numpy as np
-from multiprocessing import Queue, Pipe
+from multiprocessing import Queue, Pipe, current_process
 from queue import Full, Empty
 
 import heapq
+import os
 
 import pyglet
 
@@ -208,7 +209,9 @@ class AgentProcess(object):
             self.env.viewer.close()
         self.weight_q.close()
         self.mgr_pipe.close()
-        pyglet.app.exit()
+        pyglet.app.exit()        
+        print(f"Quitting {current_process().name} process")
+        os._exit(0)
 
     def _render(self):
         ''' Render (if desired)
@@ -280,19 +283,18 @@ class AgentProcess(object):
 
         return True
 
-    def run(self):
+    def _run(self):
         ''' Main loop for process 1
         '''
 
         # Main process loop
         pyglet.clock.schedule(self._main_loop) #Run program
         pyglet.app.run()
-        print("Quitting process 1")
             
 
 def run_agent_process(traj_q, weight_q, mgr_pipe, render=False):
     agent_proc = AgentProcess(traj_q, weight_q, mgr_pipe, render=render)
-    agent_proc.run()
+    agent_proc._run()
 
 if __name__ == '__main__':
     a, b = Pipe() # dummy pipe connections

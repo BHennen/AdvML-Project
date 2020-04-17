@@ -1,5 +1,7 @@
 from communication import Message
 
+from multiprocessing import current_process
+import os
 from queue import Full, Empty
 from collections import deque
 
@@ -65,7 +67,8 @@ class RewardPredictorModel(object):
                 t2_r_hat = model(inputs={"obs_input":obs_2, "act_input":actions_2}, training=True)
                 # Compute the loss value for this triple.
                 main_loss = self._loss_fn(t1_r_hat, t2_r_hat, pref)
-                loss_value = tf.add_n([main_loss] + model.losses)
+                model_loss = model.losses
+                loss_value = tf.add_n([main_loss] + model_loss)
 
             # Use the gradient tape to automatically retrieve
             # the gradients of the trainable variables with respect to the loss.
@@ -229,28 +232,26 @@ class RewardPredictor(object):
 
         for msg in msgs:
             if msg.title == "stop":
-                self.stop()
+                self._stop()
 
-    def stop(self):
+    def _stop(self):
         # Stop process execution
         self._stop_sig = True
-        self._weight_q.close()
+        self._weight_q.close()                
+        print(f"Quitting {current_process().name} process")
+        os._exit(0)
 
-    def run(self):
+    def _run(self):
         # Main process loop
         while True:
             self._check_msgs()
-            if self._stop_sig:
-                # Program signalled to stop, end loop
-                break
             self._get_comparisons()
             self._learn()
-            self._output_model_weights()        
-        print("Quitting reward predictor")
+            self._output_model_weights()
 
 def run_reward_predictor(pref_q, weight_q, mgr_conn):
     reward_predictor = RewardPredictor(pref_q=pref_q, weight_q=weight_q, mgr_conn=mgr_conn, buffer_len=BUFFER_LEN)
-    reward_predictor.run()
+    reward_predictor._run()
 
 if __name__ == "__main__":
     model = RewardPredictorModel()

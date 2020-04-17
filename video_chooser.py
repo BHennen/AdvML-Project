@@ -3,9 +3,11 @@ from widgets import WindowWidget, RelativeWidget, PixelFrame, Button
 from communication import Message
 
 import pyglet
+
+import os
 from queue import Full, Empty
 from time import sleep
-from multiprocessing import Process, Queue, current_process, freeze_support
+from multiprocessing import Process, Queue, current_process
 
 # Overall processes:
 # A trajectory segment is a sequence of observations and actions, σ = ((o0,a0),(o1,a1),...,(ok−1,ak−1))∈(O×A)k. 
@@ -73,9 +75,9 @@ class VideoChooser():
         for msg in msgs:
             if msg.sender == "mgr":
                 if msg.title == "stop":
-                    self._close()
+                    self._stop()
     
-    def _close(self):
+    def _stop(self):
         # Remove handlers
         for holder in self.button_frame.children:
             for button in holder.children:
@@ -84,6 +86,9 @@ class VideoChooser():
         self.window.window.close() # Actually close window
         # close pipe
         self.mgr_conn.close()
+        pyglet.app.exit()
+        print(f"Quitting {current_process().name} process")
+        os._exit(0)
 
     def _init_choice_buttons(self):
         self.button_frame = RelativeWidget(parent = self.window, left = 0, right = 0, top=0, height = 50)
@@ -166,17 +171,16 @@ class VideoChooser():
             self.pref_q.get_nowait()
             self._save_triple(trajectory_1, trajectory_2, preference)
 
-    def run(self):
+    def _run(self):
         self.window.window.set_visible()
         self._get_new_pair()
         pyglet.clock.schedule_interval(self._check_msgs, 1)
         pyglet.clock.schedule_interval(self.window.update, 1.0/self.FPS) #Update graphics
         pyglet.app.run()
-        print("Quitting video chooser")
 
 def run_video_chooser(traj_q, pref_q, mgr_conn):
     chooser = VideoChooser(traj_q, pref_q, mgr_conn)
-    chooser.run()
+    chooser._run()
 
 def test():
     from widgets import gen_rainbow_pixels, gen_solid_pixels

@@ -44,20 +44,20 @@ class CarRacingManager(object):
 
     def stop(self):
         # Signal all processes to stop.
-        print("Signalling processes to stop...")
+        print("Waiting for processes to stop...")
         for p in self.m_pipes:
             p.send(Message(sender="mgr", title="stop"))
             
         for p in self.processes:
             p.join()
-        print("Done waiting.")
+        print("Done waiting for all processes.")
         self.execute = False
 
     def run_full_program(self):
         # Initialize and start processes
-        self.processes.append(Process(target=run_agent_process, args=(self.traj_q, self.weight_q, self.p_pipes[0])))
-        self.processes.append(Process(target=run_video_chooser, args=(self.traj_q, self.pref_q, self.p_pipes[1])))
-        self.processes.append(Process(target=run_reward_predictor, args=(self.pref_q, self.weight_q, self.p_pipes[2])))
+        self.processes.append(Process(target=run_agent_process, args=(self.traj_q, self.weight_q, self.p_pipes[0]), name = "Agent"))
+        self.processes.append(Process(target=run_video_chooser, args=(self.traj_q, self.pref_q, self.p_pipes[1]), name = "Video Chooser"))
+        self.processes.append(Process(target=run_reward_predictor, args=(self.pref_q, self.weight_q, self.p_pipes[2]), name = "Reward Predictor"))
         
         for p in self.processes:
             p.start()
@@ -68,8 +68,6 @@ class CarRacingManager(object):
             self._check_msgs()
             sleep(1)
         print("Manager quitting.")
-        for p in self.processes:
-            p.join()
 
 if __name__ == "__main__":
     mgr = CarRacingManager()
