@@ -23,7 +23,7 @@ from keras.optimizers import Adam
 from keras.initializers import RandomNormal
 import numpy as np
 from multiprocessing import Queue, Pipe
-from queue import Full
+from queue import Full, Empty
 
 import heapq
 
@@ -158,9 +158,9 @@ class SegmentSelector():
                 pass
 
 class AgentProcess(object):
-    def __init__(self, traj_q, weight_pipe, mgr_pipe, verbose=False, render=False):
+    def __init__(self, traj_q, weight_q, mgr_pipe, verbose=False, render=False):
         self.traj_q = traj_q
-        self.weight_pipe = weight_pipe
+        self.weight_q = weight_q
         self.mgr_pipe = mgr_pipe
         self.mgr_kill_sig = False
         self.reward_predictor_model = RewardPredictorModel()
@@ -182,13 +182,6 @@ class AgentProcess(object):
         self.env.viewer.window.set_visible(visible=False)
 
     def _process_messages(self):
-        # Check weight pipe for new weights
-        msg = None
-        while self.weight_pipe.poll():
-            msg = self.weight_pipe.recv()
-        if msg and msg.sender == "proc3" and msg.title == "weights":
-            self.reward_predictor_model.set_weights(msg.content)
-
         # Check mgr pipe 
         while self.mgr_pipe.poll():
             msg = self.mgr_pipe.recv()
@@ -198,13 +191,23 @@ class AgentProcess(object):
             # Render
             if msg.sender == "proc2" and msg.title == "render":
                 self.render_game = True
-
+    
+    def _update_reward_weights(self):
+        # Check weight queue for new weights
+        try:
+            weights = self.weight_q.get_nowait()
+            self.reward_predictor_model.set_weights(weights)
+        except Empty:
+            pass
+        
     def _stop(self):
         ''' Called when process asked to terminate by mgr
         '''
         if self.has_rendered:
             self.env.viewer.window.pop_handlers()
             self.env.viewer.close()
+        self.weight_q.close()
+        self.mgr_pipe.close()
         pyglet.app.exit()
 
     def _render(self):
@@ -269,6 +272,7 @@ class AgentProcess(object):
             self._stop()
             return False # Break out of loop to end process
 
+        self._update_reward_weights()
         self._agent_step()
         self._render()
 
@@ -286,10 +290,10 @@ class AgentProcess(object):
         print("Quitting process 1")
             
 
-def run_agent_process(traj_q, weight_pipe, mgr_pipe, render=False):
-    agent_proc = AgentProcess(traj_q, weight_pipe, mgr_pipe, render=render)
+def run_agent_process(traj_q, weight_q, mgr_pipe, render=False):
+    agent_proc = AgentProcess(traj_q, weight_q, mgr_pipe, render=render)
     agent_proc.run()
 
 if __name__ == '__main__':
     a, b = Pipe() # dummy pipe connections
-    run_agent_process(Queue(), a, b, render=True)
+    run_agent_process(Queue(), Queue(), b, render=True)

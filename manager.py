@@ -14,7 +14,7 @@ class CarRacingManager(object):
     def __init__(self):
         self.traj_q = Queue() # Trajectory queue from process 1 to process 2 (unlabeled pairs)
         self.pref_q = Queue() # Labeled trajectory pairs from process 2 to process 3
-        self.w_pipes = Pipe() # Pipe to send and receive weights from process 3 to process 1
+        self.weight_q = Queue(1) # Queue to send and receive weights from process 3 to process 1
         self.p_pipes = [] # Pipes owned by processes to communicate with manager
         self.m_pipes = [] # Pipes owned by manager to communicate with processes
         self.processes = []
@@ -55,9 +55,9 @@ class CarRacingManager(object):
 
     def run_full_program(self):
         # Initialize and start processes
-        self.processes.append(Process(target=run_agent_process, args=(self.traj_q, self.w_pipes[0], self.p_pipes[0])))
+        self.processes.append(Process(target=run_agent_process, args=(self.traj_q, self.weight_q, self.p_pipes[0])))
         self.processes.append(Process(target=run_video_chooser, args=(self.traj_q, self.pref_q, self.p_pipes[1])))
-        self.processes.append(Process(target=run_reward_predictor, args=(self.pref_q, self.w_pipes[1], self.p_pipes[2])))
+        self.processes.append(Process(target=run_reward_predictor, args=(self.pref_q, self.weight_q, self.p_pipes[2])))
         
         for p in self.processes:
             p.start()

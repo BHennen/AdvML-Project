@@ -184,9 +184,9 @@ class RewardPredictorModel(object):
 class RewardPredictor(object):
     '''
     '''
-    def __init__(self, pref_q, weight_conn, mgr_conn, buffer_len):
+    def __init__(self, pref_q, weight_q, mgr_conn, buffer_len):
         self._pref_q = pref_q
-        self._weight_conn = weight_conn
+        self._weight_q = weight_q
         self._mgr_conn = mgr_conn
         self._q = deque(maxlen = buffer_len)
         self.model = RewardPredictorModel()
@@ -203,8 +203,15 @@ class RewardPredictor(object):
     
     def _output_model_weights(self):
         # Outputs the current model weights to the weight connection
-        msg = Message(sender="proc3", title="weights", content=self.model.get_weights())
-        self._weight_conn.send(msg)
+        try:
+            self._weight_q.put_nowait(self.model.get_weights())
+        except Full:
+            # Process 1 hasn't gotten the weight yet, remove it and add updated weight
+            try:
+                self._weight_q.get_nowait()
+            except Empty: # rare case if p1 gets the old weight before we have a chance
+                pass
+            self._output_model_weights()
 
     def _learn(self):
         # Learns from the buffer, iterating over the whole queue
@@ -224,6 +231,7 @@ class RewardPredictor(object):
     def stop(self):
         # Stop process execution
         self._stop_sig = True
+        self._weight_q.close()
 
     def run(self):
         # Main process loop
@@ -237,8 +245,8 @@ class RewardPredictor(object):
             self._output_model_weights()        
         print("Quitting reward predictor")
 
-def run_reward_predictor(pref_q, weight_conn, mgr_conn):
-    reward_predictor = RewardPredictor(pref_q=pref_q, weight_conn=weight_conn, mgr_conn=mgr_conn, buffer_len=BUFFER_LEN)
+def run_reward_predictor(pref_q, weight_q, mgr_conn):
+    reward_predictor = RewardPredictor(pref_q=pref_q, weight_q=weight_q, mgr_conn=mgr_conn, buffer_len=BUFFER_LEN)
     reward_predictor.run()
 
 if __name__ == "__main__":

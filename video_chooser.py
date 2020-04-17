@@ -73,12 +73,17 @@ class VideoChooser():
         for msg in msgs:
             if msg.sender == "mgr":
                 if msg.title == "stop":
-                    # Remove handlers
-                    for holder in self.button_frame.children:
-                        for button in holder.children:
-                            button.pop_handlers()
-                    self.window.close() # Signal window to close
-                    self.window.window.close() # Actually close window
+                    self._close()
+    
+    def _close(self):
+        # Remove handlers
+        for holder in self.button_frame.children:
+            for button in holder.children:
+                button.pop_handlers()
+        self.window.close() # Signal window to close
+        self.window.window.close() # Actually close window
+        # close pipe
+        self.mgr_conn.close()
 
     def _init_choice_buttons(self):
         self.button_frame = RelativeWidget(parent = self.window, left = 0, right = 0, top=0, height = 50)
