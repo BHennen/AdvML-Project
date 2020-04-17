@@ -106,13 +106,13 @@ class RewardPredictorModel(object):
     # Loss function as described in paper by Christiano, Paul et. al. 2017
     def _loss_fn(self, t1_r_hat, t2_r_hat, pref):
         # Compute terms for softmax
-        t1_rsum = tf.reduce_sum(t1_r_hat)
-        t2_rsum = tf.reduce_sum(t2_r_hat)
-        max_reward = tf.maximum(t1_rsum, t2_rsum)
+        t1_rsum = tf.math.reduce_sum(t1_r_hat)
+        t2_rsum = tf.math.reduce_sum(t2_r_hat)
+        max_reward = tf.math.maximum(t1_rsum, t2_rsum)
         
         # Subtract max_reward to prevent overflow
-        t1_exp = tf.exp(t1_rsum - max_reward)
-        t2_exp = tf.exp(t2_rsum - max_reward)
+        t1_exp = tf.math.exp(t1_rsum - max_reward)
+        t2_exp = tf.math.exp(t2_rsum - max_reward)
 
         p_hat_1_gt_2 = t1_exp / (t1_exp + t2_exp)
         p_hat_2_gt_1 = t2_exp / (t2_exp + t1_exp)
@@ -123,7 +123,10 @@ class RewardPredictorModel(object):
         p_hat_1_gt_2_adj = p_hat_1_gt_2 * 0.9 + p_hat_2_gt_1 * 0.1
         p_hat_2_gt_1_adj = p_hat_2_gt_1 * 0.9 + p_hat_1_gt_2 * 0.1
 
-        loss = -1 * (pref[0] * p_hat_1_gt_2_adj + pref[1] * p_hat_2_gt_1_adj)
+        log_phat1 = tf.math.log(p_hat_1_gt_2_adj)
+        log_phat2 = tf.math.log(p_hat_2_gt_1_adj)
+
+        loss = -1 * (pref[0] * log_phat1 + pref[1] * log_phat2)
 
         return loss
 
