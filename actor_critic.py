@@ -1,159 +1,493 @@
 import tensorflow as tf
-from keras import Model
-from keras.layers import Dense, Conv2D, MaxPooling2D, Flatten, Input, Dropout
+import tensorflow.keras as keras
 from keras.regularizers import l2
-from keras.optimizers import Adam
 from keras.initializers import RandomNormal
+from tensorflow.keras.layers import LeakyReLU, UpSampling1D, Input, InputLayer, Reshape, Activation, Lambda, AveragePooling1D
+from tensorflow.keras.layers import Conv2D, Dense, MaxPooling2D, Flatten, BatchNormalization, Dropout, Conv2DTranspose, concatenate
+from tensorflow.keras.models import Model
 
 import numpy as np
 
-class ActorCritic(object):
+import os, sys
+import copy
+
+def discount_vector(x, discount, last_val=0):
+    ''' Returns discounted array of x
+    '''
+    discounted = np.array(x, dtype=np.float32)
+    discounted[-1] += last_val
+    for step in range(discounted.size - 2, -1 , -1):
+        discounted[step] += discounted[step + 1] * discount
+    return discounted
+
+class Memory:
+    """ Based on: https://github.com/openai/spinningup/blob/master/spinup/algos/tf1/ppo/ppo.py
+    A buffer for storing trajectories experienced by a PPO agent interacting
+    with the environment, and using Generalized Advantage Estimation (GAE-Lambda)
+    for calculating the advantages of state-action pairs.
+    """
+    def __init__(self, size, obs_dim, num_actions, gamma=0.99, lam=0.95):
+        self.obs_buf = np.zeros((size, *obs_dim), dtype=np.float32) # Observations
+        self.act_buf = np.zeros((size, num_actions), dtype=np.int32) # Action indices chosen
+        self.rew_buf = np.zeros(size, dtype=np.float32) # Rewards
+        self.adv_buf = np.zeros((size, 1), dtype=np.float32) # Advantages
+        self.ret_buf = np.zeros((size, 1), dtype=np.float32) # Returns
+        self.val_buf = np.zeros(size, dtype=np.float32) # Estimated values
+        self.probbuf = np.zeros((size, num_actions), dtype=np.float32) # Probability of choosing action
+        self.gamma, self.lam = gamma, lam
+        self.ptr, self.path_start_idx, self.max_size = 0, 0, size
+
+    def store(self, obs, act, rew, val, prob):
+        """
+        Append one timestep of agent-environment interaction to the buffer.
+        """
+        assert self.ptr < self.max_size     # buffer has to have room so you can store
+        self.obs_buf[self.ptr] = obs
+        self.act_buf[self.ptr] = act
+        self.rew_buf[self.ptr] = rew
+        self.val_buf[self.ptr] = val
+        self.probbuf[self.ptr] = prob
+        self.ptr += 1
+
+    def finish_path(self, last_val=0):
+        """
+        Call this at the end of a trajectory, or when one gets cut off
+        by an epoch ending. This looks back in the buffer to where the
+        trajectory started, and uses rewards and value estimates from
+        the whole trajectory to compute advantage estimates with GAE-Lambda,
+        as well as compute the rewards-to-go for each state, to use as
+        the targets for the value function.
+        The "last_val" argument should be 0 if the trajectory ended
+        because the agent reached a terminal state (died), and otherwise
+        should be V(s_T), the value function estimated for the last state.
+        This allows us to bootstrap the reward-to-go calculation to account
+        for timesteps beyond the arbitrary episode horizon (or epoch cutoff).
+        """
+        path_slice = slice(self.path_start_idx, self.ptr)
+        rews = np.append(self.rew_buf[path_slice], last_val)
+        vals = np.append(self.val_buf[path_slice], last_val)
+        
+        # the next two lines implement GAE-Lambda advantage calculation
+        deltas = rews[:-1] + self.gamma * vals[1:] - vals[:-1]
+        self.adv_buf[path_slice] = discount_vector(deltas, self.gamma * self.lam).reshape((deltas.size, 1))
+        
+        # the next line computes rewards-to-go, to be targets for the value function
+        self.ret_buf[path_slice] = discount_vector(rews, self.gamma).reshape((rews.size, 1))[:-1]
+        
+        self.path_start_idx = self.ptr
+
+    def get(self):
+        """
+        Call this at the end of an epoch to get all of the data from
+        the buffer, with advantages appropriately normalized (shifted to have
+        mean zero and std one). Also, resets some pointers in the buffer.
+        """
+        assert self.ptr == self.max_size # buffer has to be full before you can get
+        self.ptr, self.path_start_idx = 0, 0
+        # the next two lines implement the advantage normalization trick
+        adv_mean, adv_std = np.mean(self.adv_buf), np.std(self.adv_buf)
+        self.adv_buf = (self.adv_buf - adv_mean) / (adv_std + + 1e-8)
+        return copy.deepcopy([self.obs_buf, self.act_buf, self.adv_buf, self.ret_buf, self.probbuf, self.rew_buf])
+
+    def copy_params(self):
+        adv_mean, adv_std = np.mean(self.adv_buf), np.std(self.adv_buf)
+        adv_buf = (self.adv_buf - adv_mean) / (adv_std + + 1e-8)
+        return copy.deepcopy([self.obs_buf, self.act_buf, adv_buf, self.ret_buf, self.probbuf, self.rew_buf])
+    
+    
+
+class ActorCriticTrainer(object):
     ''' Advantage Actor Critic that is updated in batches. Needs model supplied to it.
 
     '''
-    def __init__(self, env, action_values, model, optimizer, learning_rate, gamma, n_max_steps, n_episodes, frameskip=1, reward_fn=None):
+    def __init__(self, env, action_values, obs_dim, model, optimizer, steps_per_episode=200, steps_per_epoch=1000, 
+                 clip_ratio=0.2, gamma=0.99, beta=0.01, delta=0.5, lam=0.95, frameskip=1, reward_fn=None, verbosity=0):
         '''
-
         :param frameskip: Allows the agent to skip n-1 simulations, repeating the chosen action for n frames.
-        :param n_max_steps: Number of iterations in the environment before terminating the episode
-        :param n_episodes: Number of episodes to run through before updating gradient
+        :param action_values: 2D list of values to send to the environment depending on which action is chosen. Should
+                              be a list of actions which contain a list of possible values, eg: [[1,2,3],[5,6]]
+        
+        :param gamma: Controls the discount rate of rewards.        
+        :param beta: Controls the contribution of the entropy term for loss.
+        :param delta: Controls the contribution of the critic for loss.
+        :param steps_per_episode: Number of steps before the episode is terminated (or done, whichever comes first)
+        :param steps_per_epoch: Number of steps before gradient is updated.
         '''
         self.model = model
         self.env = env
-        self.learning_rate = learning_rate
+        self.clip_ratio = clip_ratio
         self.gamma = gamma
+        self.beta = beta
+        self.delta = delta
         self.optimizer = optimizer
         self.action_values = action_values
+        self.steps_per_episode = steps_per_episode
+        self.steps_per_epoch = steps_per_epoch
+        self.action_indices = [[i for i in range(len(action_vals))] for action_vals in action_values]
+        self.num_unique_actions = len(np.unique(self.action_indices))
         self.reward_fn = reward_fn
         self.frameskip = frameskip
-        self.n_max_steps = n_max_steps
-        self.n_max_episodes = n_episodes
         self.cur_episode = 0
         self.cur_step = 0
-        self.episode_rewards = []
-        self.all_rewards = []
-        self.episode_grads = []
-        self.all_grads = []
+        self.ep_step = 0
         self.obs = self.env.reset()
-        self.next_value = None
-        self.next_action_dists = None
+        self.verbosity = verbosity
+        self.mem = Memory(steps_per_epoch, obs_dim, len(action_values), gamma, lam)
+        self.prev_mem = None
 
-    @staticmethod
-    def build_model(input_shape, do_dropout=True, p_dropout=0.5, l2_reg_val=0.001, print_summary=False):
-        input_tensor = Input(shape=input_shape, name='input')
-        x = input_tensor
-        if do_dropout:
-            x = Dropout(p_dropout)(input_tensor)
-        # Convolution layers
-        convs = [(15, (7, 7), 3, 'conv1'), (15, (5, 5), 2, 'conv2'), (15, (3, 3), 1, 'conv3'), (15, (3, 3), 1, 'conv4')]
-        for (filters, kernel, strides, name) in convs:
-            x = Conv2D(filters, kernel_size=kernel, strides=strides, name=name)(x)
-        x = MaxPooling2D((2, 2))(x)
-        x = Flatten(name='flatten')(x)
-        # Dense layers
-        x = Dense(24, activation="relu", name='dense_1', kernel_initializer=RandomNormal(), kernel_regularizer=l2(l2_reg_val))(x)
-        output0 = Dense(1, name='value', activation='linear', kernel_initializer=RandomNormal())(x)
-        output1 = Dense(3, name='steer', activation='softmax', kernel_initializer=RandomNormal())(x)
-        output2 = Dense(2, name='gas', activation='softmax', kernel_initializer=RandomNormal())(x)
-        output3 = Dense(2, name='brake', activation='softmax', kernel_initializer=RandomNormal())(x)
-        model = Model(inputs=[input_tensor], outputs=[output0, output1, output2, output3], name='agent_policy')
-        if print_summary:
-            model.summary()
-        return model
+    def save_weights(self, path):
+        self.model.save_weights(path)
 
-    def play_one_step(self, obs, value=None, action_dists=None):
-        ''' Plays one step of the environment and returns next_obs, reward, done, next_value, next_action_dists, grads
+    def load_weights(self, path):
+        self.model.load_weights(path)
+
+    def play_one_epoch(self, step_done_fn = None, ep_done_fn = None, epoch_done_fn = None, training = False):
+        # Take another step in the environment
+        self.obs, reward, done = self._play_one_step(self.obs, step_done_fn, training)            
+        self.cur_step += 1
+        self.ep_step += 1
+        if step_done_fn: step_done_fn(ep_step = self.ep_step)
+
+        # Check if done with episode or cutoff by epoch
+        if done or self.ep_step >= self.steps_per_episode or self.cur_step >= self.steps_per_epoch:
+            # Done with this episode, or epoch cutoff
+            if training:
+                last_val = 0 if done else self.model(inputs = tf.convert_to_tensor([self.obs]))[0] #TODO: check if correct, should be one value
+                self.mem.finish_path(last_val)
+            if ep_done_fn:
+                ep_done_fn(ep_step=self.ep_step, terminal = done or self.ep_step >= self.steps_per_episode)
+            self.ep_step = 0
+            self.obs = self.env.reset()
+
+        # Check if done with epoch
+        if self.cur_step >= self.steps_per_epoch:
+            self.cur_step  = 0
+            losses = None
+            if training:
+                losses = self._apply_grads(done)
+            if epoch_done_fn: epoch_done_fn(losses = losses)
+
+    def _play_one_step(self, obs, step_done_fn = None, training = False):
+        ''' Plays one step of the environment
         '''
-        with tf.GradientTape() as tape:
-            # Get the estimated value and probability distributions for the actions
-            if value is None:
-                value, *action_dists = self.model(obs)
 
-            # get log probabilities of the distributions
-            log_dists = [tf.math.log([action_dist]) for action_dist in action_dists]
-            
-            # select action indices from the log distributions
-            action_idxs = [tf.random.categorical(log_dist,1)[0][0] for log_dist in log_dists]
+        # Get the estimated value and probability distributions for the actions
+        value, *logits = self.model(inputs = tf.convert_to_tensor([obs]))
+        probs = [tf.nn.softmax(logit).numpy()[0] for logit in logits]
 
-            # get log probabilities of the actions
-            log_probas = [log_dists[which_action][0][action_idx] for which_action, action_idx in enumerate(action_idxs)]
-            
-            with tape.stop_recording():
-                # Get the actual actions taken
-                actions = [self.action_values[which_action][action_idx] for which_action, action_idx in enumerate(action_idxs)]
-                # and take n steps in the environment
-                for _ in range(self.frameskip):
-                    next_obs, reward, done, _ = self.env.step(actions)
-                    if done:
-                        break
-                if self.reward_fn:
-                    reward = self.reward_fn(next_obs)
-
-            next_value, *next_action_dists = self.model(next_obs)
-            advantage = reward + (1.0 - done) * self.gamma * next_value - value
-            # TODO: add entropy to actor loss to encourage exploration
-            critic_loss = tf.math.pow(advantage, 2)
-            actor_loss = tf.reduce_sum(-1 * tf.multiply(log_probas, advantage))
-            model_loss = self.model.losses
-            total_loss = tf.math.add_n([critic_loss, actor_loss] + model_loss)
-        
-        grads = tape.gradient(total_loss, self.model.trainable_variables)
-        return next_obs, reward, done, next_value, next_action_dists, grads
-    
-    def discount_rewards(self, rewards):
-        discounted = np.array(rewards)
-        for step in range(len(rewards) - 2, -1 , -1):
-            discounted[step] += discounted[step + 1] * self.gamma
-        return discounted
-    
-    def discount_and_normalize_rewards(self, all_rewards):
-        all_discounted_rewards = [self.discount_rewards(rewards) for rewards in all_rewards]
-        flat_rewards = np.concatenate(all_discounted_rewards)
-        reward_mean = flat_rewards.mean()
-        reward_std = flat_rewards.std()
-        return [(discounted_rewards - reward_mean) / reward_std for discounted_rewards in all_discounted_rewards]
-
-    def apply_grads(self, all_rewards, all_grads):
-        ''' Updates the model according to the rewards we've gathered and the gradients accumulated.
-        '''
-        normalized_rewards = self.discount_and_normalize_rewards(all_rewards)
-
-        all_mean_grads = []
-        for var_index in range(len(self.model.trainable_variables)):
-            mean_grads = tf.reduce_mean(
-                [final_reward * all_grads[episode_index][step][var_index]
-                for episode_index, final_rewards in enumerate(normalized_rewards)
-                for step, final_reward in enumerate(final_rewards)],
-                axis = 0)
-            all_mean_grads.append(mean_grads)
-        self.optimizer.apply_gradients(zip(all_mean_grads, self.model.trainable_variables))
-
-    def training_loop(self):
-        ''' Training loop is meant to be called in a while True loop
-        '''
-        if self.cur_episode < self.n_max_episodes:
-            # Keep taking steps in this episode
-            done = False
-            if self.cur_step < self.n_max_steps:
-                # Take another step in the environment
-                self.obs, reward, done, self.next_value, self.next_action_dists, grads = self.play_one_step(self.obs, self.next_value, self.next_action_dists)
-                self.episode_rewards.append(reward)
-                self.episode_grads.append(grads)
-                self.cur_step += 1
-            if done or self.cur_step >= self.n_max_steps:
-                # Done with this episode, reset environment for new episode
-                self.all_rewards.append(self.episode_rewards)
-                self.all_grads.append(self.episode_grads)
-                self.next_value = None
-                self.next_action_dists = None
-                self.obs = self.env.reset()
-                self.episode_rewards = []
-                self.episode_grads = []
-                self.cur_step = 0
-                self.cur_episode += 1
+        # Select an action index from the distributions for all actions
+        if training:
+            # Training selects actions based on the probabilities
+            action_indices = [np.random.choice(self.action_indices[which_action], p=prob)
+                              for which_action, prob in enumerate(probs)]
         else:
-            # Done iterating through all the episodes, apply gradients and reset for more training
-            self.apply_grads(self.all_rewards, self.all_grads)
-            self.cur_episode = 0
-            self.all_rewards = []
-            self.all_grads = []
+            # Not training selects the best (most favored) action
+            action_indices = [np.argmax(prob) for prob in probs]
+                          
+        # Select the actual actions to give to the environment
+        actions = [self.action_values[which_action][action_idx]
+                   for which_action, action_idx in enumerate(action_indices)]
+        if len(actions) == 1:
+            actions = actions[0]
+
+        # and take n steps in the environment
+        for _ in range(self.frameskip):
+            next_obs, reward, done, _ = self.env.step(actions)
+            if done:
+                reward = -1
+                break
+
+        # Store this step in the memory 
+        if training:
+            act_probs = [prob[action_indices[which_action]] for which_action, prob in enumerate(probs)]
+            self.mem.store(obs, action_indices, reward, value, act_probs)       
+         
+        return next_obs, reward, done
+    
+    def _apply_grads(self, done):
+        '''
+        Calculates loss with the current memory and applies gradients to the model.
+        '''
+        # Get the buffer of previous states
+        if self.prev_mem is None:
+            self.prev_mem = self.mem.copy_params() # First time running there is no previous policy
+
+        prev_obs_buf, prev_act_buf, prev_adv_buf, prev_ret_buf, prev_probbuf, prev_rew_buf = self.prev_mem
+        cur_obs_buf, cur_ret_buf = self.mem.obs_buf, self.mem.ret_buf
+        # cur_obs_buf, cur_act_buf, cur_adv_buf, cur_ret_buf, cur_probbuf, cur_rew_buf = self.mem.copy_params()
+
+        # losses1 = self._calc_loss_ppo(prev_obs_buf, prev_act_buf, prev_adv_buf, prev_probbuf, cur_obs_buf, cur_ret_buf)
+        # total_loss1, policy_loss1, value_loss1, entropy_loss1 = losses1
+        # print(f"PPO: " +
+        #       f"Tot_loss:{total_loss1:.4f}, " +
+        #       f"Pi_loss:{policy_loss1:.4f}, " +
+        #       f"Val_loss:{value_loss1:.4f}, " +
+        #       f"Ent_loss:{entropy_loss1:.4f}"
+        #         )
+        # losses2 = self._calc_loss_normal(done, cur_obs_buf, cur_rew_buf, cur_act_buf, cur_ret_buf, cur_adv_buf)
+        # total_loss2, policy_loss2, value_loss2, entropy_loss2 = losses2
+        # print(f"Normal: " +
+        #       f"Tot_loss:{total_loss2:.4f}, " +
+        #       f"Pi_loss:{policy_loss2:.4f}, " +
+        #       f"Val_loss:{value_loss2:.4f}, " +
+        #       f"Ent_loss:{entropy_loss2:.4f}"
+        #         )
+
+        # Record the loss and update gradients
+        with tf.GradientTape() as tape:
+            # total_loss, policy_loss, value_loss, entropy_loss = self._calc_loss()
+            losses = self._calc_loss_ppo(prev_obs_buf, prev_act_buf, prev_adv_buf, prev_probbuf, cur_obs_buf, cur_ret_buf)
+        
+        grads = tape.gradient(losses[0], self.model.trainable_weights)
+        self.optimizer.apply_gradients(zip(grads, self.model.trainable_weights))
+        
+        # Done updating policy, associate current mem with prev policy
+        self.prev_mem = self.mem.get()
+        return losses
+
+    def _calc_loss_ppo(self, prev_obs_buf, prev_act_buf, prev_adv_buf, prev_probbuf, cur_obs_buf, cur_ret_buf):
+        
+        # Calculate policy loss using previous policy information
+        # Get the estimated value and probability distributions for the previous states using the new policy
+        _, *prev_logits = self.model(inputs = tf.convert_to_tensor(prev_obs_buf, dtype=tf.float32))
+        # Get action probability distributions
+        prev_dists = [tf.nn.softmax(logit) for logit in prev_logits]
+        # From the old state's action indices get the probability of choosing that action using new policy
+        new_act_proba = tf.convert_to_tensor([[prev_dists[which_action][state][action_ind]
+                                              for which_action, action_ind in enumerate(actions)]
+                                              for state, actions in enumerate(prev_act_buf)])
+
+        ratio = tf.math.divide_no_nan(new_act_proba, prev_probbuf)          # pi(a|s) / pi_old(a|s)
+        min_adv = tf.where(prev_adv_buf>=0, (1+self.clip_ratio)*prev_adv_buf, (1-self.clip_ratio)*prev_adv_buf)
+        policy_loss = -tf.reduce_mean(tf.minimum(ratio * prev_adv_buf, min_adv))
+
+        # Calculate current value loss and entropy loss using current observations
+        cur_values, *cur_logits = self.model(inputs = tf.convert_to_tensor(cur_obs_buf, dtype=tf.float32))
+        # Get action probability distributions
+        cur_dists = [tf.nn.softmax(logit) for logit in cur_logits]
+        # get log probabilities of the distributions
+        log_dists = [tf.math.log(dist + 1e-20) for dist in cur_dists]
+        value_loss = self.delta * tf.reduce_mean((cur_ret_buf - cur_values)**2)
+        entropy_loss = self.beta * tf.reduce_mean(
+                                        tf.reduce_sum(
+                                            [tf.reduce_sum(tf.math.multiply_no_nan(log_dist, dist), axis=-1)
+                                                for dist, log_dist in zip(cur_dists, log_dists)], axis=0))
+        total_loss = policy_loss + value_loss + entropy_loss
+        return total_loss, policy_loss, value_loss, entropy_loss
+
+    # def _print(self, verbosity, message):
+    #     if verbosity <= self.verbosity:
+    #         print(message)
+
+    # def play_one_episode(self, ep_done_fn = None, step_done_fn = None, training = False):
+    #     ''' Runs an episode one step at a time. Meant to be called in a while true loop.
+
+    #     '''
+    #     if done or self.cur_step >= self.steps_per_episode:
+    #         # Done with this episode
+    #         last_val = 0 if d else self.model(inputs = tf.convert_to_tensor([self.obs]))[0] #TODO: check if correct, should be one value
+    #         self.mem.finish_path(last_val)
+    #         losses = self._apply_grads(done) if training else None
+    #         if ep_done_fn: ep_done_fn(ep_step=self.cur_step, losses=losses)
+    #         self.obs = self.env.reset()
+    #         self.cur_step  = 0
+    #         if training: self.mem.clear()
+
+    # def _calc_loss_normal(self, done, obs_buf, rew_buf, act_buf, ret_buf, adv_buf):
+        
+    #     values, *logits = self.model(inputs = tf.convert_to_tensor(obs_buf, dtype=tf.float32))
+        
+    #     # Get our advantages
+    #     last_val = 0 if done else self.gamma * self.model(inputs = tf.convert_to_tensor([self.obs]))[0]
+    #     discounted_rewards = discount_vector(rew_buf, self.gamma, last_val)
+    #     advantage = tf.convert_to_tensor(np.array(discounted_rewards)[:, None], dtype=tf.float32) - values
+        
+    #     # Value loss
+    #     value_loss = self.delta * advantage ** 2
+
+    #     # TODO: Check if works with multiple actions
+    #     # pad_dists = []
+    #     # for dist in log_dists:
+    #     #     pad_dists.append(self._pad_up_to(dist, [tf.shape(dist)[0], self.num_unique_actions]))
+    #     # y_cross = actions_one_hot * pad_dists
+    #     # policy_loss1 = - tf.reduce_sum(y_cross, axis=[1,2])
+        
+    #     # Calculate our policy loss
+    #     actions_one_hot = tf.one_hot(act_buf, self.num_unique_actions, dtype=tf.float32)
+    #     pad_logits = []
+    #     for logit in logits:
+    #         pad_logits.append(self._pad_up_to(logit, [tf.shape(logit)[0], self.num_unique_actions]))
+    #     xentropy = tf.nn.softmax_cross_entropy_with_logits(labels=actions_one_hot,
+    #                                                        logits=pad_logits)
+    #     policy_loss = tf.reshape(xentropy, tf.shape(advantage))
+    #     policy_loss *= tf.stop_gradient(advantage)
+        
+    #     # Calculate entropy loss
+    #     # Get action probability distributions
+    #     dists = [tf.nn.softmax(logit) for logit in logits]
+    #     # get log probabilities of the distributions
+    #     log_dists = [tf.math.log(dist + 1e-20) for dist in dists]
+    #     entropy_sums = []
+    #     for dist, log_dist in zip(dists, log_dists):
+    #         mult = tf.math.multiply_no_nan(log_dist, dist)
+    #         entropy_sum = tf.reduce_sum(mult, axis = 1)
+    #         entropy_sums.append(entropy_sum)
+    #     entropy_loss = self.beta * tf.reshape(tf.reduce_sum(entropy_sums, axis = 0), tf.shape(policy_loss))
+
+    #     total_loss = tf.reduce_mean((policy_loss + value_loss + entropy_loss))
+    #     return total_loss, policy_loss, value_loss, entropy_loss
+
+    def _pad_up_to(self, t, max_in_dims):
+        s = tf.shape(t)
+        paddings = [[0, m-s[i]] for (i,m) in enumerate(max_in_dims)]
+        return tf.pad(t, paddings, 'CONSTANT')
+
+    # def _discount_rewards(self, done):
+    #     # Add discounted end reward
+    #     if not done:
+    #         end_add = self.gamma * self.model(inputs = tf.convert_to_tensor([self.obs]))[0]
+    #         self.mem.rewards[-1] += end_add
+
+    #     # Discount all rewards
+    #     discounted = np.array(self.mem.rewards)
+    #     for step in range(len(self.mem.rewards) - 2, -1 , -1):
+    #         discounted[step] += discounted[step + 1] * self.gamma
+    #     return discounted
+    
+    # def _discount_and_normalize_rewards(self, done):
+    #     discounted_rewards = self._discount_rewards(done)
+    #     reward_mean = discounted_rewards.mean()
+    #     reward_std = discounted_rewards.std()
+    #     return (discounted_rewards - reward_mean) / reward_std
+
+def build_cartpole_model(input_shape, action_values):
+    # Simple model for testing
+    inputs = Input(shape=input_shape, name='input')
+
+    # Policy
+    p_d1 = Dense(100, activation='relu', name='policy_dense_1')(inputs)
+    policy_logits = []
+    for action in action_values:
+        policy_logits.append(Dense(len(action))(p_d1))
+    
+    # Values
+    v_d1 = Dense(100, activation='relu', name='values_dense_1')(inputs)
+    values = Dense(1)(v_d1)
+
+    model = Model(inputs = [inputs], outputs=[values] + policy_logits, name="Actor-Critic Cartpole")
+    return model
+
+def train(ac_trainer, path):
+    render_flag = False
+    def step_done_fn(ep_step, *args, **kwargs):
+        nonlocal render_flag
+        if render_flag: env.render()
+
+    consecutive = 0
+    tot_steps = []
+    num_episodes = 0
+    training_done = False
+    def ep_done_fn(ep_step, terminal, *args, **kwargs):
+        nonlocal render_flag, consecutive, tot_steps, num_episodes, training_done
+        if terminal: # Episode reached max steps or died; wasn't cut off by epoch
+            tot_steps.append(ep_step)
+            num_episodes += 1
+            if num_episodes % 20 == 0:
+                avg_steps = np.mean(tot_steps[-20:])
+                print(f"Episode {num_episodes} done. Steps: {ep_step}. Last 20 mean steps: {avg_steps}.")
+
+        complete = ep_step >= 200 
+        if complete or num_episodes % 50 == 0:
+            render_flag = True
+        else:
+            render_flag = False
+        if complete:
+            consecutive += 1
+        else:
+            consecutive = 0
+        if consecutive > 100:
+            print(f"Game solved in {num_episodes} episodes, and {np.sum(tot_steps)} steps.")
+            training_done = True
+
+    tot_losses = []
+    def epoch_done_fn(losses, *args, **kwargs):
+        total_loss, policy_loss, value_loss, entropy_loss = losses
+        tot_losses.append(total_loss)
+        print(f"Epoch done. Last 10 avg_tot_loss:{np.mean(tot_losses[-10:]):.4f}, " +
+              f"Tot_loss:{total_loss:.4f}, " +
+              f"Pi_loss:{policy_loss:.4f}, " +
+              f"Val_loss:{value_loss:.4f}, " +
+              f"Ent_loss:{entropy_loss:.4f}"
+                )
+
+    while not training_done:
+        ac_trainer.play_one_epoch(step_done_fn = step_done_fn,
+                                  ep_done_fn = ep_done_fn,
+                                  epoch_done_fn = epoch_done_fn,
+                                  training = True)
+    
+    # training done, save file
+    ac_trainer.save_weights(path)
+
+def play(ac_trainer, path):
+    ac_trainer.load_weights(path)
+
+    def step_done_fn(*args, **kwargs):
+        ac_trainer.env.render()
+
+    def ep_done_fn(ep_step, *args, **kwargs):
+        print(f"Episode done. Steps: {ep_step}.")
+
+    try:
+      while True:
+        ac_trainer.play_one_epoch(step_done_fn = step_done_fn,
+                                  ep_done_fn = ep_done_fn,
+                                  epoch_done_fn = None,
+                                  training = False)
+    except KeyboardInterrupt:
+      print("Received Keyboard Interrupt. Shutting down.")
+    finally:
+      ac_trainer.env.close()
+
+
+if __name__ == "__main__":
+    import gym, argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-t", "--train", action="store_true", help="Train the test program.")
+    parser.add_argument("--path", default="cartpole_test.h5", help="Path to save or load the trained model weights.")
+    args = parser.parse_args()
+    env = gym.make("CartPole-v1")
+    action_values = [[0, 1]]
+    
+    ac_model = build_cartpole_model(input_shape = (env.observation_space.shape[0],), action_values = action_values)
+    optimizer = keras.optimizers.Adam(learning_rate = 1e-3)
+
+    if args.train:
+        steps_per_epoch = 200
+    else:
+        steps_per_epoch = 200
+
+    ac_trainer = ActorCriticTrainer(env = env,
+                                    action_values = action_values,
+                                    obs_dim = (env.observation_space.shape[0],),
+                                    model = ac_model,
+                                    optimizer = optimizer,
+                                    steps_per_episode = 200,
+                                    steps_per_epoch = steps_per_epoch,
+                                    clip_ratio = 0.2,
+                                    gamma = 0.99,
+                                    beta = 0.01,
+                                    delta = 0.5,
+                                    lam = 0.95,
+                                    frameskip = 1,
+                                    reward_fn = None,
+                                    verbosity = 0
+                                    )
+                                     
+    if args.train:
+        train(ac_trainer, args.path)
+    else:
+        play(ac_trainer, args.path)
+
+    
+    
