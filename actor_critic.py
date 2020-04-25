@@ -87,12 +87,12 @@ class Memory:
         # the next two lines implement the advantage normalization trick
         adv_mean, adv_std = np.mean(self.adv_buf), np.std(self.adv_buf)
         self.adv_buf = (self.adv_buf - adv_mean) / (adv_std + + 1e-8)
-        return copy.deepcopy([self.obs_buf, self.act_buf, self.adv_buf, self.ret_buf, self.probbuf, self.rew_buf])
+        return copy.deepcopy([self.obs_buf, self.act_buf, self.adv_buf, self.ret_buf, self.probbuf])
 
     def copy_params(self):
         adv_mean, adv_std = np.mean(self.adv_buf), np.std(self.adv_buf)
         adv_buf = (self.adv_buf - adv_mean) / (adv_std + + 1e-8)
-        return copy.deepcopy([self.obs_buf, self.act_buf, adv_buf, self.ret_buf, self.probbuf, self.rew_buf])
+        return copy.deepcopy([self.obs_buf, self.act_buf, adv_buf, self.ret_buf, self.probbuf])
     
     
 
@@ -209,156 +209,49 @@ class ActorCriticTrainer(object):
         Calculates loss with the current memory and applies gradients to the model.
         '''
         # Get the buffer of previous states
+        cur_mem = self.mem.get()
         if self.prev_mem is None:
-            self.prev_mem = self.mem.copy_params() # First time running there is no previous policy
+            self.prev_mem = cur_mem # First time running there is no previous policy
 
-        prev_obs_buf, prev_act_buf, prev_adv_buf, prev_ret_buf, prev_probbuf, prev_rew_buf = self.prev_mem
-        cur_obs_buf, cur_ret_buf = self.mem.obs_buf, self.mem.ret_buf
-        # cur_obs_buf, cur_act_buf, cur_adv_buf, cur_ret_buf, cur_probbuf, cur_rew_buf = self.mem.copy_params()
-
-        # losses1 = self._calc_loss_ppo(prev_obs_buf, prev_act_buf, prev_adv_buf, prev_probbuf, cur_obs_buf, cur_ret_buf)
-        # total_loss1, policy_loss1, value_loss1, entropy_loss1 = losses1
-        # print(f"PPO: " +
-        #       f"Tot_loss:{total_loss1:.4f}, " +
-        #       f"Pi_loss:{policy_loss1:.4f}, " +
-        #       f"Val_loss:{value_loss1:.4f}, " +
-        #       f"Ent_loss:{entropy_loss1:.4f}"
-        #         )
-        # losses2 = self._calc_loss_normal(done, cur_obs_buf, cur_rew_buf, cur_act_buf, cur_ret_buf, cur_adv_buf)
-        # total_loss2, policy_loss2, value_loss2, entropy_loss2 = losses2
-        # print(f"Normal: " +
-        #       f"Tot_loss:{total_loss2:.4f}, " +
-        #       f"Pi_loss:{policy_loss2:.4f}, " +
-        #       f"Val_loss:{value_loss2:.4f}, " +
-        #       f"Ent_loss:{entropy_loss2:.4f}"
-        #         )
+        prev_obs_buf, prev_act_buf, prev_adv_buf, prev_ret_buf, prev_probbuf = self.prev_mem
 
         # Record the loss and update gradients
         with tf.GradientTape() as tape:
-            # total_loss, policy_loss, value_loss, entropy_loss = self._calc_loss()
-            losses = self._calc_loss_ppo(prev_obs_buf, prev_act_buf, prev_adv_buf, prev_probbuf, cur_obs_buf, cur_ret_buf)
+            losses = self._calc_loss_ppo(prev_obs_buf, prev_act_buf, prev_adv_buf, prev_ret_buf, prev_probbuf)
         
         grads = tape.gradient(losses[0], self.model.trainable_weights)
         self.optimizer.apply_gradients(zip(grads, self.model.trainable_weights))
         
         # Done updating policy, associate current mem with prev policy
-        self.prev_mem = self.mem.get()
+        self.prev_mem = cur_mem
         return losses
 
-    def _calc_loss_ppo(self, prev_obs_buf, prev_act_buf, prev_adv_buf, prev_probbuf, cur_obs_buf, cur_ret_buf):
-        
+    def _calc_loss_ppo(self, obs_buf, act_buf, adv_buf, ret_buf, probbuf):
         # Calculate policy loss using previous policy information
         # Get the estimated value and probability distributions for the previous states using the new policy
-        _, *prev_logits = self.model(inputs = tf.convert_to_tensor(prev_obs_buf, dtype=tf.float32))
+        values, *logits = self.model(inputs = tf.convert_to_tensor(obs_buf, dtype=tf.float32))
         # Get action probability distributions
-        prev_dists = [tf.nn.softmax(logit) for logit in prev_logits]
+        dists = [tf.nn.softmax(logit) for logit in logits]
         # From the old state's action indices get the probability of choosing that action using new policy
-        new_act_proba = tf.convert_to_tensor([[prev_dists[which_action][state][action_ind]
+        new_act_proba = tf.convert_to_tensor([[dists[which_action][state][action_ind]
                                               for which_action, action_ind in enumerate(actions)]
-                                              for state, actions in enumerate(prev_act_buf)])
+                                              for state, actions in enumerate(act_buf)])
 
-        ratio = tf.math.divide_no_nan(new_act_proba, prev_probbuf)          # pi(a|s) / pi_old(a|s)
-        min_adv = tf.where(prev_adv_buf>=0, (1+self.clip_ratio)*prev_adv_buf, (1-self.clip_ratio)*prev_adv_buf)
-        policy_loss = -tf.reduce_mean(tf.minimum(ratio * prev_adv_buf, min_adv))
+        ratio = tf.math.divide_no_nan(new_act_proba, probbuf)          # pi(a|s) / pi_old(a|s)
+        min_adv = tf.where(adv_buf>=0, (1+self.clip_ratio)*adv_buf, (1-self.clip_ratio)*adv_buf)
+        policy_loss = -tf.reduce_mean(tf.minimum(ratio * adv_buf, min_adv))
 
         # Calculate current value loss and entropy loss using current observations
-        cur_values, *cur_logits = self.model(inputs = tf.convert_to_tensor(cur_obs_buf, dtype=tf.float32))
-        # Get action probability distributions
-        cur_dists = [tf.nn.softmax(logit) for logit in cur_logits]
         # get log probabilities of the distributions
-        log_dists = [tf.math.log(dist + 1e-20) for dist in cur_dists]
-        value_loss = self.delta * tf.reduce_mean((cur_ret_buf - cur_values)**2)
+        log_dists = [tf.math.log(dist + 1e-20) for dist in dists]
+        value_loss = self.delta * tf.reduce_mean((ret_buf - values)**2)
         entropy_loss = self.beta * tf.reduce_mean(
                                         tf.reduce_sum(
                                             [tf.reduce_sum(tf.math.multiply_no_nan(log_dist, dist), axis=-1)
-                                                for dist, log_dist in zip(cur_dists, log_dists)], axis=0))
+                                                for dist, log_dist in zip(dists, log_dists)], axis=0))
         total_loss = policy_loss + value_loss + entropy_loss
         return total_loss, policy_loss, value_loss, entropy_loss
 
-    # def _print(self, verbosity, message):
-    #     if verbosity <= self.verbosity:
-    #         print(message)
-
-    # def play_one_episode(self, ep_done_fn = None, step_done_fn = None, training = False):
-    #     ''' Runs an episode one step at a time. Meant to be called in a while true loop.
-
-    #     '''
-    #     if done or self.cur_step >= self.steps_per_episode:
-    #         # Done with this episode
-    #         last_val = 0 if d else self.model(inputs = tf.convert_to_tensor([self.obs]))[0] #TODO: check if correct, should be one value
-    #         self.mem.finish_path(last_val)
-    #         losses = self._apply_grads(done) if training else None
-    #         if ep_done_fn: ep_done_fn(ep_step=self.cur_step, losses=losses)
-    #         self.obs = self.env.reset()
-    #         self.cur_step  = 0
-    #         if training: self.mem.clear()
-
-    # def _calc_loss_normal(self, done, obs_buf, rew_buf, act_buf, ret_buf, adv_buf):
-        
-    #     values, *logits = self.model(inputs = tf.convert_to_tensor(obs_buf, dtype=tf.float32))
-        
-    #     # Get our advantages
-    #     last_val = 0 if done else self.gamma * self.model(inputs = tf.convert_to_tensor([self.obs]))[0]
-    #     discounted_rewards = discount_vector(rew_buf, self.gamma, last_val)
-    #     advantage = tf.convert_to_tensor(np.array(discounted_rewards)[:, None], dtype=tf.float32) - values
-        
-    #     # Value loss
-    #     value_loss = self.delta * advantage ** 2
-
-    #     # TODO: Check if works with multiple actions
-    #     # pad_dists = []
-    #     # for dist in log_dists:
-    #     #     pad_dists.append(self._pad_up_to(dist, [tf.shape(dist)[0], self.num_unique_actions]))
-    #     # y_cross = actions_one_hot * pad_dists
-    #     # policy_loss1 = - tf.reduce_sum(y_cross, axis=[1,2])
-        
-    #     # Calculate our policy loss
-    #     actions_one_hot = tf.one_hot(act_buf, self.num_unique_actions, dtype=tf.float32)
-    #     pad_logits = []
-    #     for logit in logits:
-    #         pad_logits.append(self._pad_up_to(logit, [tf.shape(logit)[0], self.num_unique_actions]))
-    #     xentropy = tf.nn.softmax_cross_entropy_with_logits(labels=actions_one_hot,
-    #                                                        logits=pad_logits)
-    #     policy_loss = tf.reshape(xentropy, tf.shape(advantage))
-    #     policy_loss *= tf.stop_gradient(advantage)
-        
-    #     # Calculate entropy loss
-    #     # Get action probability distributions
-    #     dists = [tf.nn.softmax(logit) for logit in logits]
-    #     # get log probabilities of the distributions
-    #     log_dists = [tf.math.log(dist + 1e-20) for dist in dists]
-    #     entropy_sums = []
-    #     for dist, log_dist in zip(dists, log_dists):
-    #         mult = tf.math.multiply_no_nan(log_dist, dist)
-    #         entropy_sum = tf.reduce_sum(mult, axis = 1)
-    #         entropy_sums.append(entropy_sum)
-    #     entropy_loss = self.beta * tf.reshape(tf.reduce_sum(entropy_sums, axis = 0), tf.shape(policy_loss))
-
-    #     total_loss = tf.reduce_mean((policy_loss + value_loss + entropy_loss))
-    #     return total_loss, policy_loss, value_loss, entropy_loss
-
-    def _pad_up_to(self, t, max_in_dims):
-        s = tf.shape(t)
-        paddings = [[0, m-s[i]] for (i,m) in enumerate(max_in_dims)]
-        return tf.pad(t, paddings, 'CONSTANT')
-
-    # def _discount_rewards(self, done):
-    #     # Add discounted end reward
-    #     if not done:
-    #         end_add = self.gamma * self.model(inputs = tf.convert_to_tensor([self.obs]))[0]
-    #         self.mem.rewards[-1] += end_add
-
-    #     # Discount all rewards
-    #     discounted = np.array(self.mem.rewards)
-    #     for step in range(len(self.mem.rewards) - 2, -1 , -1):
-    #         discounted[step] += discounted[step + 1] * self.gamma
-    #     return discounted
-    
-    # def _discount_and_normalize_rewards(self, done):
-    #     discounted_rewards = self._discount_rewards(done)
-    #     reward_mean = discounted_rewards.mean()
-    #     reward_std = discounted_rewards.std()
-    #     return (discounted_rewards - reward_mean) / reward_std
 
 def build_cartpole_model(input_shape, action_values):
     # Simple model for testing
